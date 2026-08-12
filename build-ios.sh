@@ -70,6 +70,19 @@ cat > "$APP/Info.plist" <<'PLIST'
 PLIST
 echo '</plist>' >> "$APP/Info.plist"
 
+# The icon lives in an asset catalog so the Xcode project and this script use
+# the same source. actool compiles it and reports the Info.plist keys that name
+# it, which are merged in rather than hand-written.
+echo "▸ Compiling the icon…"
+xcrun actool iOS/Assets.xcassets \
+    --compile "$APP" \
+    --platform iphonesimulator \
+    --minimum-deployment-target 18.0 \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$BUILD/icon-partial.plist" \
+    --output-format human-readable-text >/dev/null
+/usr/libexec/PlistBuddy -c "Merge $BUILD/icon-partial.plist" "$APP/Info.plist" >/dev/null
+
 echo "▸ Done: $APP"
 
 if [ "$LAUNCH" = "yes" ]; then

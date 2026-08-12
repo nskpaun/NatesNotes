@@ -100,6 +100,72 @@ func renderCanvas(size: CGFloat) -> NSBitmapImageRep? {
     return rep
 }
 
+// MARK: - Render onto the iOS icon grid
+
+/// iOS masks the icon itself, so this one is the opposite shape of the macOS
+/// canvas: full bleed, square corners, and no alpha channel — the App Store
+/// rejects one even when it is entirely opaque.
+///
+/// The artwork already is an icon: a squircle on a black field. So it is drawn
+/// edge to edge rather than inset, and the system's own mask trims the corners.
+/// Insetting it would nest one rounded square inside another and leave the
+/// black field showing in the corners.
+func renderIOSCanvas(size: CGFloat) -> NSBitmapImageRep? {
+    let pixels = Int(size)
+    // Drawn with alpha because CoreGraphics has no RGB-without-alpha context
+    // format; it is flattened to opaque below.
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels,
+                                     pixelsHigh: pixels, bitsPerSample: 8,
+                                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                     colorSpaceName: .deviceRGB, bytesPerRow: 0,
+                                     bitsPerPixel: 0) else { return nil }
+    rep.size = NSSize(width: size, height: size)
+
+    guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    context.imageInterpolation = .high
+
+    // The artwork's own field, sampled from a source corner, so anything the
+    // mask leaves in the corners matches the body rather than showing a seam.
+    let field = sourceRep.colorAt(x: 2, y: 2) ?? .black
+    field.setFill()
+    NSBezierPath(rect: CGRect(x: 0, y: 0, width: size, height: size)).fill()
+
+    source.draw(in: CGRect(x: 0, y: 0, width: size, height: size),
+                from: crop, operation: .sourceOver, fraction: 1,
+                respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+
+    NSGraphicsContext.restoreGraphicsState()
+
+    // Re-draw into a noneSkipLast context so the PNG carries no alpha channel
+    // at all. An opaque alpha channel still counts as one, and it is rejected.
+    guard let drawn = rep.cgImage,
+          let opaque = CGContext(data: nil, width: pixels, height: pixels,
+                                 bitsPerComponent: 8, bytesPerRow: 0,
+                                 space: CGColorSpaceCreateDeviceRGB(),
+                                 bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    else { return nil }
+    opaque.draw(drawn, in: CGRect(x: 0, y: 0, width: size, height: size))
+    guard let flattened = opaque.makeImage() else { return nil }
+    return NSBitmapImageRep(cgImage: flattened)
+}
+
+// MARK: - Write the iOS icon
+
+if arguments.contains("--ios") {
+    try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    guard let rep = renderIOSCanvas(size: 1024),
+          let data = rep.representation(using: .png, properties: [:]) else {
+        print("failed to render the iOS icon")
+        exit(1)
+    }
+    try data.write(to: outputURL)
+    print("wrote 1024×1024 iOS icon to \(outputURL.lastPathComponent)")
+    exit(0)
+}
+
 // MARK: - Write the iconset
 
 try? FileManager.default.removeItem(at: outputURL)
