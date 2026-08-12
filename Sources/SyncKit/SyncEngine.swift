@@ -105,8 +105,14 @@ public actor SyncEngine {
                                      appId: settings.appId,
                                      appVersion: settings.appVersion)
         // A bad code is 403 and must not be retried blindly, so only transient
-        // failures get another attempt.
-        let result = try await withRetry(policy: retry) {
+        // failures get another attempt — and far fewer of them than a
+        // background sync takes. Someone is watching a spinner: the full policy
+        // is six attempts against a 30s timeout, so an unreachable server left
+        // "Pairing…" on screen for minutes with nothing to act on. Failing in
+        // one retry says "can't reach the server" while they still care.
+        let interactive = RetryPolicy(maxAttempts: 2, baseDelay: retry.baseDelay,
+                                      maxDelay: 2, jitter: retry.jitter)
+        let result = try await withRetry(policy: interactive) {
             try await self.transport.redeemPairing(request)
         }
 
