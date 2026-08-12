@@ -173,19 +173,24 @@ public actor SyncEngine {
             // A snapshot populates the mirror but carries no bytes, so on the
             // first sync we also hand the app every existing file. Without this
             // a device pairing into a populated space would show nothing.
-            var isFirstSync = false
             if store.state.lastCommittedCursor == nil {
                 try await takeSnapshot()
-                isFirstSync = true
             }
             try await ensureFolders()
             outcome.pushed = try await pushOutbox()
-            if isFirstSync {
-                outcome.updated = try await materialiseWholeMirror()
-            }
+            // Every pass, not just the first. A snapshot commits the mirror and
+            // the cursor together but fetches the bytes afterwards, so anything
+            // that interrupts it leaves nodes known and unread — and with the
+            // cursor already set, a first-sync-only fetch would never ask for
+            // them again.
+            outcome.updated = try await materialiseUnreconciled()
+
             let pulled = try await pullChanges()
-            // The fresh snapshot leaves nothing for the change feed to repeat,
-            // so these can't collide.
+            // A record can be both unread and freshly changed. The change feed
+            // carries the newer bytes, so it wins; applying the stale copy too
+            // would look like a divergent edit and mint a conflict copy.
+            let superseded = Set(pulled.updated.map(\.nodeId))
+            outcome.updated.removeAll { superseded.contains($0.nodeId) }
             outcome.updated.append(contentsOf: pulled.updated)
             outcome.removed = pulled.removed
             outcome.conflicts = store.state.conflicts.filter { !$0.resolved }
@@ -290,7 +295,7 @@ public actor SyncEngine {
             } catch SyncError.gone {
                 // History no longer covers our cursor: resnapshot, safely.
                 try await takeSnapshot()
-                let refreshed = try await materialiseWholeMirror()
+                let refreshed = try await materialiseUnreconciled()
                 result.updated.append(contentsOf: refreshed)
                 return result
             }
@@ -379,16 +384,31 @@ public actor SyncEngine {
                               base: baseBlobId.flatMap { blobs.data(for: $0) })
     }
 
-    /// After a forced resnapshot, hand the app every file we hold so it can
-    /// reconcile from scratch.
-    private func materialiseWholeMirror() async throws -> [RemoteDocument] {
+    /// Hands the app every file it has never taken the content of.
+    ///
+    /// Two conditions, because they answer different questions. A merge base
+    /// equal to the node's current blob means the app has reconciled these
+    /// bytes — true of anything it pushed, too. A blob already in the local
+    /// store means this engine has already fetched and handed them up, whether
+    /// or not the app said anything back.
+    ///
+    /// Requiring both makes the pass self-healing without turning into a loop:
+    /// an interrupted snapshot or a failed download is retried, while a record
+    /// the caller simply chose not to act on is not re-delivered forever.
+    /// Reconciled records are skipped outright, so the steady state is free.
+    private func materialiseUnreconciled() async throws -> [RemoteDocument] {
         var documents: [RemoteDocument] = []
-        for entry in store.state.mirror.values
-        where entry.kind == .file && !entry.isTombstone && entry.blobId != nil {
+        for entry in store.state.mirror.values {
+            guard entry.kind == .file, !entry.isTombstone,
+                  let blobId = entry.blobId,
+                  entry.mergeBaseBlobId != blobId,
+                  !blobs.has(blobId)
+            else { continue }
+
             let node = SyncNode(id: entry.nodeId, kind: .file, parentId: entry.parentId,
                                 name: entry.name, mediaType: entry.mediaType,
-                                blob: entry.blobId.map { BlobRef(id: $0, size: 0,
-                                                                 sha256: Digest.bareHex($0)) },
+                                blob: BlobRef(id: blobId, size: 0,
+                                              sha256: Digest.bareHex(blobId)),
                                 appProperties: entry.appProperties, version: entry.version)
             if let document = try await materialise(node) { documents.append(document) }
         }

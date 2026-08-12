@@ -388,6 +388,39 @@ final class AcceptanceTests: XCTestCase {
         }
     }
 
+    // MARK: - 9d. A committed snapshot must still hand over the bytes
+
+    /// `takeSnapshot` commits the mirror and the cursor in one transaction, but
+    /// the bytes are fetched afterwards. Anything that interrupts that — a
+    /// dropped connection, one blob failing, the app being killed — leaves a
+    /// device that knows every node and holds none of them.
+    ///
+    /// The cursor is committed, so the next sync is no longer a first sync and
+    /// the old files are never asked for again. New edits still arrive through
+    /// the change feed, which is why this shows up as "new notes sync, old ones
+    /// never appear" rather than as sync being broken.
+    func test09d_snapshotWithoutMaterialisationStillDeliversOldFiles() async throws {
+        let folder = server.seedFolder(name: "notes", parentId: server.rootNodeId)
+        server.seedFile(name: "old-one.json", parentId: folder.id,
+                        content: note("old-one", body: "written long ago"))
+        server.seedFile(name: "old-two.json", parentId: folder.id,
+                        content: note("old-two", body: "also long ago"))
+
+        let (engine, store) = try await makePairedEngine()
+
+        // Exactly the state an interrupted first sync leaves behind.
+        try await engine.takeSnapshot()
+        XCTAssertNotNil(store.state.lastCommittedCursor, "snapshot commits the cursor")
+        XCTAssertEqual(store.state.mirror.values.filter { $0.kind == .file }.count, 2)
+
+        let outcome = try await engine.sync()
+
+        let delivered = Set(outcome.updated.map(\.name))
+        XCTAssertEqual(delivered, ["old-one.json", "old-two.json"],
+                       "files known to the mirror but never handed to the app must "
+                       + "still be delivered, cursor or no cursor")
+    }
+
     // MARK: - 10. Tombstone application
 
     func test10_tombstonesArriveAsRemovals() async throws {
