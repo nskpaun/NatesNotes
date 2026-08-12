@@ -46,7 +46,7 @@ final class SyncController: ObservableObject {
     }
 
     var deviceName: String {
-        currentState.deviceName ?? Host.current().localizedName ?? "This Mac"
+        currentState.deviceName ?? Device.name
     }
 
     var installationId: String { currentState.installationId }
@@ -404,7 +404,7 @@ final class SyncController: ObservableObject {
     }
 
     private func hostName() -> String {
-        Host.current().localizedName ?? "Mac"
+        Device.name
     }
 
     static func describe(_ error: Error) -> String {

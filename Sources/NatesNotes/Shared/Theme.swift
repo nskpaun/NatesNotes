@@ -18,11 +18,11 @@ enum AppMode: String, Codable {
 
     /// Cool blue when thinking, warm amber when executing.
     var accent: PlatformColor {
-        self == .chill ? OKLCH(0.78, 0.13, 250).nsColor : OKLCH(0.80, 0.13, 78).nsColor
+        self == .chill ? OKLCH(0.78, 0.13, 250).platformColor : OKLCH(0.80, 0.13, 78).platformColor
     }
 
     var accentBright: PlatformColor {
-        self == .chill ? OKLCH(0.87, 0.11, 250).nsColor : OKLCH(0.90, 0.10, 78).nsColor
+        self == .chill ? OKLCH(0.87, 0.11, 250).platformColor : OKLCH(0.90, 0.10, 78).platformColor
     }
 
     var toggled: AppMode { self == .chill ? .lockedIn : .chill }
@@ -37,7 +37,7 @@ struct OKLCH {
         self.l = l; self.c = c; self.h = h; self.alpha = alpha
     }
 
-    var nsColor: PlatformColor {
+    var platformColor: PlatformColor {
         let hRad = h * .pi / 180
         let a = c * cos(hRad)
         let b = c * sin(hRad)
@@ -61,7 +61,7 @@ struct OKLCH {
         return PlatformColor(srgbRed: encode(r), green: encode(g), blue: encode(bl), alpha: alpha)
     }
 
-    var color: Color { Color(nsColor: nsColor) }
+    var color: Color { Color(platformColor) }
 }
 
 /// Design tokens. Midnight navy, near-black, with a single accent that follows
@@ -112,7 +112,7 @@ enum Theme {
     static let syntaxMarker  = white(0.22)
 
     // Editorial
-    static var codeText: PlatformColor { OKLCH(0.82, 0.11, 30).nsColor }
+    static var codeText: PlatformColor { OKLCH(0.82, 0.11, 30).platformColor }
     static let codeBG      = white(0.045)
     static var quoteBar: PlatformColor { accent.withAlphaComponent(0.55) }
     static var highlightBG: PlatformColor { accent.withAlphaComponent(0.20) }
@@ -162,7 +162,13 @@ enum Theme {
 // MARK: - SwiftUI bridges
 
 extension Color {
-    init(_ ns: PlatformColor) { self = Color(nsColor: ns) }
+    init(_ platform: PlatformColor) {
+        #if canImport(AppKit)
+        self = Color(nsColor: platform)
+        #else
+        self = Color(uiColor: platform)
+        #endif
+    }
 }
 
 extension Theme {

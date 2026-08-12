@@ -169,3 +169,6 @@ enum Palette {
         return c.withAlphaComponent(isLineWork ? 0.72 : 0.35)
     }
 }
+
+/// `id` already exists; this just lets SwiftUI present one directly.
+extension Drawing: Identifiable {}

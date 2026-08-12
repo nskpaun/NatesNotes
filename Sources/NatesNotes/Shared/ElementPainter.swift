@@ -82,7 +82,8 @@ enum ElementPainter {
         let s = NSAttributedString(string: e.text.isEmpty ? " " : e.text,
                                    attributes: attributes(for: e, isDark: isDark))
         let bounds = s.boundingRect(with: CGSize(width: 10_000, height: 10_000),
-                                    options: [.usesLineFragmentOrigin, .usesFontLeading])
+                                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                    context: nil)
         return CGSize(width: ceil(bounds.width) + 4, height: ceil(bounds.height) + 4)
     }
 
@@ -325,7 +326,7 @@ enum ElementPainter {
             return roundedPolygonPath(pts, radius: cornerRadius(rect, factor: 0.18))
         default:
             let r = e.edges == .round ? cornerRadius(rect, factor: 0.25) : 0
-            return BezierPath(roundedRect: rect, xRadius: r, yRadius: r)
+            return BezierPath.rounded(rect, radius: r)
         }
     }
 
@@ -445,7 +446,8 @@ enum ElementPainter {
         let s = NSAttributedString(string: e.text, attributes: attributes(for: e, isDark: isDark))
         let rect = CGRect(x: e.frame.minX, y: e.frame.minY,
                           width: max(e.frame.width, 1), height: max(e.frame.height, 1))
-        s.draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading])
+        s.draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading],
+               context: nil)
     }
 
     // MARK: - Shared

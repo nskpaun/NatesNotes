@@ -18,6 +18,20 @@ typealias PlatformImage = UIImage
 typealias BezierPath    = UIBezierPath
 #endif
 
+// MARK: - Device
+
+enum Device {
+    /// What this installation calls itself when pairing, and what a conflict
+    /// copy is attributed to.
+    static var name: String {
+        #if canImport(AppKit)
+        return Host.current().localizedName ?? "This Mac"
+        #else
+        return UIDevice.current.name
+        #endif
+    }
+}
+
 // MARK: - Colour
 
 /// The palette is written in sRGB, and `Theme` builds every token through this
@@ -192,6 +206,17 @@ extension BezierPath {
         }
         if current.count > 1 { lines.append(current) }
         return lines
+    }
+}
+
+extension BezierPath {
+    /// AppKit takes separate x/y radii, UIKit a single corner radius.
+    static func rounded(_ rect: CGRect, radius: CGFloat) -> BezierPath {
+        #if canImport(AppKit)
+        return NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        #else
+        return UIBezierPath(roundedRect: rect, cornerRadius: radius)
+        #endif
     }
 }
 
