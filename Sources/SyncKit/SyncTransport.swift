@@ -94,10 +94,9 @@ public struct SyncSettings: Sendable, Equatable {
         self.uploadChunkSize = uploadChunkSize
     }
 
-    /// Placeholder endpoint. Point this at your own Personal File Sync server
-    /// with `SYNC_BASE_URL`, or edit this constant for a local build. Whatever
-    /// it is set to, TLS validation is never bypassed.
-    public static let defaultBaseURL = URL(string: "https://sync.example.com")!
+    /// The deployment this build talks to. `SYNC_BASE_URL` still overrides it
+    /// for a staging run; TLS validation is never bypassed either way.
+    public static let defaultBaseURL = URL(string: "https://sync.invalid")!
 
     /// Where the address is stored on this machine.
     public static let baseURLDefaultsKey = "nn.syncBaseURL"

@@ -10,10 +10,13 @@ NatesNotes.app/
 .DS_Store
 
 # Xcode
-*.xcodeproj/
+# NatesNotes.xcodeproj is tracked; ignore only user state inside it
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcworkspace/
 xcuserdata/
 DerivedData/
 
 # iOS build output
 .build/ios/
+.build/xcode/

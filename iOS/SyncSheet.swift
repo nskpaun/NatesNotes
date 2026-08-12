@@ -40,7 +40,6 @@ struct SyncSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var code = ""
-    @State private var server = ""
     @State private var working = false
     @State private var message: String?
 
@@ -68,10 +67,6 @@ struct SyncSheet: View {
 
                 if !isPaired {
                     Section {
-                        TextField("https://your-sync-server", text: $server)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
                         TextField("PAIRING-CODE", text: $code)
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled()
@@ -82,8 +77,7 @@ struct SyncSheet: View {
                     } header: {
                         Text("Pair")
                     } footer: {
-                        Text("Get a one-time code from your Personal File Sync server. "
-                             + "Leave the server blank to use the built-in default.")
+                        Text("Paste a one-time code from your sync server.")
                     }
                 } else {
                     Section {
@@ -116,9 +110,6 @@ struct SyncSheet: View {
     private func pair() async {
         working = true
         defer { working = false }
-        if let url = URL(string: server.trimmingCharacters(in: .whitespaces)), !server.isEmpty {
-            sync.settings = SyncSettings(baseURL: url)
-        }
         switch await sync.pair(code: code.trimmingCharacters(in: .whitespaces)) {
         case .success(let space):
             message = "Paired with \(space)."
