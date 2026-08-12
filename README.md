@@ -130,10 +130,9 @@ The design decisions, wire format and conflict policy are written up in
   URLs or the app's own state file.
 - Notes stay fully usable with sync off, unpaired, or unreachable.
 
-The server address is **not compiled in** — set it in the sync panel (the pill
-at the bottom of the sidebar → *Change*), or pass `SYNC_BASE_URL` for a one-off
-run. It's stored per-machine, so a checkout of this repo never carries anyone's
-endpoint. TLS validation is never disabled and no private CA is installed.
+Set `SYNC_BASE_URL` to your own Personal File Sync deployment — the compiled-in
+default is a placeholder, so sync stays inert until you point it somewhere real.
+TLS validation is never disabled and no private CA is installed.
 
 ```bash
 SYNC_BASE_URL=https://my-host swift run NatesNotes

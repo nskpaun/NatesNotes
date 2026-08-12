@@ -7,9 +7,8 @@ record, plus the reasoning behind each.
 ## 0. Ground rules inherited from the handoff
 
 - The base URL lives at the transport boundary only (`SyncSettings.baseURL`),
-  never in domain code. Default supplied at runtime — from the app's sync panel or
-  `SYNC_BASE_URL` — never compiled in, so a public checkout carries no one's
-  home-server address.
+  never in domain code. The default is a placeholder — set `SYNC_BASE_URL` to
+  your own deployment, or point it at a staging host.
 - TLS validation is never disabled and no private CA is installed — the
   deployment presents a publicly valid certificate, so the system default is
   exactly right. Verified: `ssl_verify_result=0` against the live host.
@@ -179,7 +178,7 @@ count and digest both check out.
 
 ## Verified against the live server
 
-Run on **12 August 2026** against the live deployment with
+Run on **12 August 2026** against a live Personal File Sync deployment with
 `--sync-smoke`, using a throwaway device that revoked its own token afterwards.
 All 16 checks passed:
 

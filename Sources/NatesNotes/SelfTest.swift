@@ -387,9 +387,19 @@ enum SelfTest {
         if case .conflict(let localDoc, let remoteDoc) = outcome {
             check("divergent body is a conflict",
                   localDoc.body == "mine" && remoteDoc.body == "theirs")
-            let copy = NoteMerge.conflictCopy(of: remoteDoc, deviceName: "Other Mac")
+            let copy = NoteMerge.conflictCopy(of: remoteDoc, source: localDoc.id)
             check("conflict copy retains the other version",
                   copy.text.contains("theirs") && copy.id != remoteDoc.id)
+            // One copy per record: detecting the same conflict twice must land
+            // on the same note rather than minting a second one.
+            check("conflict copy id is stable per record",
+                  NoteMerge.conflictCopy(of: remoteDoc, source: localDoc.id).id == copy.id)
+            check("an untouched copy is refreshable",
+                  NoteMerge.isUntouchedConflictCopy(copy))
+            var edited = copy
+            edited.text = "user rewrote this"
+            check("an edited copy is left alone",
+                  !NoteMerge.isUntouchedConflictCopy(edited))
         } else {
             check("divergent body is a conflict", false, "\(outcome)")
         }

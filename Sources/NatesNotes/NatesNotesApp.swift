@@ -93,13 +93,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var headless = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Live end-to-end check against the real server; exits when done.
-        if CommandLine.arguments.contains("--sync-diag") {
-            headless = true
-            NSApp.setActivationPolicy(.accessory)
-            NSApp.windows.forEach { $0.orderOut(nil) }
-            Task { await LiveSmokeTest.diagnose() }
-            return
-        }
         if let index = CommandLine.arguments.firstIndex(of: "--sync-smoke") {
             let code = CommandLine.arguments.count > index + 1
                 ? CommandLine.arguments[index + 1] : ""
