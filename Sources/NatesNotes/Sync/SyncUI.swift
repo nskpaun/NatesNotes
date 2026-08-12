@@ -61,6 +61,8 @@ struct SyncPanel: View {
     @State private var busy = false
     @State private var message: String?
     @State private var isError = false
+    @State private var server = ""
+    @State private var editingServer = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -73,6 +75,8 @@ struct SyncPanel: View {
                     ProgressView().controlSize(.small)
                 }
             }
+
+            serverField
 
             switch sync.status {
             case .unpaired, .needsPairing:
@@ -95,6 +99,48 @@ struct SyncPanel: View {
         }
         .padding(14)
         .frame(width: 320)
+    }
+
+    /// The server address lives here rather than in source, so the repository
+    /// never carries a personal endpoint.
+    private var serverField: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Server")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Theme.sTextFaint)
+                Spacer()
+                if !editingServer {
+                    Button("Change") { editingServer = true }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.sAccent)
+                }
+            }
+            if editingServer {
+                HStack(spacing: 6) {
+                    TextField("https://…", text: $server)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .onSubmit { saveServer() }
+                    Button("Save") { saveServer() }
+                }
+            } else {
+                Text(sync.serverDescription)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Theme.sTextSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .onAppear { server = sync.serverDescription }
+    }
+
+    private func saveServer() {
+        sync.setServer(server)
+        editingServer = false
+        message = "Server set. Pair this device to start syncing."
+        isError = false
     }
 
     // MARK: Pairing

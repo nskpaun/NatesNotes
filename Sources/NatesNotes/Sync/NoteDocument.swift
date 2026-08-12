@@ -215,37 +215,17 @@ enum NoteMerge {
         }
     }
 
-    static let conflictBanner = "> Conflicting version from another device. "
-        + "Merge anything you need into the original, then delete this note.\n\n"
-
-    /// The id a conflict copy of `source` always takes.
-    ///
-    /// Derived rather than fresh so a record can only ever own one outstanding
-    /// copy. A fresh id per detection meant a record that kept conflicting —
-    /// which is exactly what a record under active editing does — minted a new
-    /// note on every sync pass, and each of those propagated as its own record.
-    static func conflictCopyId(for source: UUID) -> UUID {
-        var bytes = source.uuid
-        // Fixed namespace twist: stable, and can't collide with the source.
-        bytes.0 ^= 0x4E; bytes.1 ^= 0x43; bytes.2 ^= 0x4F; bytes.3 ^= 0x50
-        return UUID(uuid: bytes)
-    }
-
     /// Materialises the losing side as its own note, so both survive on every
     /// device once it syncs back.
-    static func conflictCopy(of remote: NoteDocument, source: UUID) -> Note {
+    static func conflictCopy(of remote: NoteDocument, deviceName: String) -> Note {
         var note = Note()
-        note.id = conflictCopyId(for: source)
+        note.id = UUID()
         note.created = remote.createdAt
         note.updated = Date()
         note.emoji = remote.emoji
-        note.text = conflictBanner + remote.body
+        let banner = "> Conflicting version from \(deviceName). "
+            + "Merge anything you need into the original, then delete this note.\n\n"
+        note.text = banner + remote.body
         return note
-    }
-
-    /// True while a copy is still exactly as this app wrote it, so refreshing it
-    /// with a newer server version can't discard anything the user typed there.
-    static func isUntouchedConflictCopy(_ note: Note) -> Bool {
-        note.text.hasPrefix(conflictBanner)
     }
 }

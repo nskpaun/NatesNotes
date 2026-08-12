@@ -51,6 +51,22 @@ final class SyncController: ObservableObject {
 
     var installationId: String { currentState.installationId }
 
+    /// The configured server, for display.
+    var serverDescription: String { settings.baseURL.absoluteString }
+
+    /// Stores the server address. Changing it invalidates the current pairing,
+    /// since a token only means anything to the server that issued it.
+    func setServer(_ address: String) {
+        var trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.contains("://") { trimmed = "https://" + trimmed }
+        guard let url = URL(string: trimmed), url.host != nil else { return }
+        UserDefaults.standard.set(url.absoluteString, forKey: SyncSettings.baseURLDefaultsKey)
+        Task {
+            await unpair()
+            status = .unpaired
+        }
+    }
+
     init(notes: NoteStore, settings: SyncSettings = .standard(), root: URL? = nil) {
         let directory = root ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -162,7 +178,7 @@ final class SyncController: ObservableObject {
         status = .syncing
         do {
             let outcome = try await backend.engine.sync()
-            await applyRemote(outcome)
+            applyRemote(outcome)
             refreshPublished()
             status = .idle
             // Edits that landed mid-sync are still queued; go again.
@@ -183,23 +199,17 @@ final class SyncController: ObservableObject {
     }
 
     /// Folds verified remote content into local storage.
-    ///
-    /// Every merge base this establishes is committed before the pass returns.
-    /// The next pull reads those bases to tell "they changed it" apart from "I
-    /// changed it"; one that lands late leaves the following pull comparing
-    /// against pre-push content, so this device reads its own last write as a
-    /// stranger's edit — a conflict with nobody but itself.
-    private func applyRemote(_ outcome: SyncOutcome) async {
+    private func applyRemote(_ outcome: SyncOutcome) {
         guard let notes else { return }
-        var reconciled: [(nodeId: String, content: Data)] = []
         isApplyingRemote = true
+        defer { isApplyingRemote = false }
 
         for document in outcome.updated {
             switch document.folder {
             case SyncEngine.notesFolder:
-                applyRemoteNote(document, into: notes, reconciled: &reconciled)
+                applyRemoteNote(document, into: notes)
             case SyncEngine.drawingsFolder:
-                applyRemoteDrawing(document, into: notes, reconciled: &reconciled)
+                applyRemoteDrawing(document, into: notes)
             default:
                 break
             }
@@ -211,19 +221,9 @@ final class SyncController: ObservableObject {
                 notes.delete(id, propagate: false)
             }
         }
-
-        isApplyingRemote = false
-
-        if let backend {
-            for entry in reconciled {
-                try? await backend.engine.recordMergeBase(nodeId: entry.nodeId,
-                                                          content: entry.content)
-            }
-        }
     }
 
-    private func applyRemoteNote(_ document: RemoteDocument, into notes: NoteStore,
-                                 reconciled: inout [(nodeId: String, content: Data)]) {
+    private func applyRemoteNote(_ document: RemoteDocument, into notes: NoteStore) {
         guard let remote = NoteDocument(data: document.content) else { return }
         let base = document.base.flatMap { NoteDocument(data: $0) }
 
@@ -232,20 +232,20 @@ final class SyncController: ObservableObject {
             var note = Note(id: remote.id)
             remote.apply(to: &note)
             notes.insert(note, propagate: false)
-            reconciled.append((document.nodeId, document.content))
+            markReconciled(document.nodeId, content: document.content)
             return
         }
 
         let local = NoteDocument(note: notes.notes[index])
         switch NoteMerge.merge(base: base, local: local, remote: remote) {
         case .keepLocal:
-            reconciled.append((document.nodeId, document.content))
+            markReconciled(document.nodeId, content: document.content)
 
         case .useRemote(let merged):
             var note = notes.notes[index]
             merged.apply(to: &note)
             notes.replace(note, propagate: false)
-            reconciled.append((document.nodeId, document.content))
+            markReconciled(document.nodeId, content: document.content)
 
         case .merged(let merged):
             var note = notes.notes[index]
@@ -253,40 +253,33 @@ final class SyncController: ObservableObject {
             notes.replace(note, propagate: false)
             // A merged result is new content, so it goes back as fresh intent.
             enqueueNote(note)
-            reconciled.append((document.nodeId, document.content))
+            markReconciled(document.nodeId, content: document.content)
 
         case .conflict(_, let remoteDoc):
             // Local stays live; the server's version is preserved as its own
-            // note so no edit is lost on any device. A record owns exactly one
-            // outstanding copy — a record that conflicts repeatedly refreshes
-            // that copy rather than adding another note each time.
-            let copy = NoteMerge.conflictCopy(of: remoteDoc, source: remote.id)
-            if let existing = notes.index(of: copy.id) {
-                // Never overwrite a copy the user has started working in.
-                if NoteMerge.isUntouchedConflictCopy(notes.notes[existing]),
-                   notes.notes[existing].text != copy.text {
-                    var refreshed = notes.notes[existing]
-                    refreshed.text = copy.text
-                    refreshed.updated = copy.updated
-                    notes.replace(refreshed, propagate: true)
-                }
-            } else {
+            // note so no edit is lost on any device.
+            let copy = NoteMerge.conflictCopy(of: remoteDoc, deviceName: document.name)
+            if !notes.notes.contains(where: { $0.text == copy.text }) {
                 notes.insert(copy, propagate: true)
             }
-            reconciled.append((document.nodeId, document.content))
+            markReconciled(document.nodeId, content: document.content)
             enqueueNote(notes.notes[index])
         }
     }
 
-    private func applyRemoteDrawing(_ document: RemoteDocument, into notes: NoteStore,
-                                    reconciled: inout [(nodeId: String, content: Data)]) {
+    private func applyRemoteDrawing(_ document: RemoteDocument, into notes: NoteStore) {
         guard let remote = DrawingDocument(data: document.content) else { return }
         guard let noteIndex = notes.index(of: remote.noteId) else { return }
         let existing = notes.notes[noteIndex].drawings[remote.id]
         if existing?.elements != remote.elements {
             notes.setDrawing(remote.drawing, for: remote.noteId, propagate: false)
         }
-        reconciled.append((document.nodeId, document.content))
+        markReconciled(document.nodeId, content: document.content)
+    }
+
+    private func markReconciled(_ nodeId: String, content: Data) {
+        guard let backend else { return }
+        Task { try? await backend.engine.recordMergeBase(nodeId: nodeId, content: content) }
     }
 
     // MARK: - Conflicts
@@ -382,10 +375,9 @@ final class SyncController: ObservableObject {
 
     private func refreshPublished() {
         let state = currentState
-        // Only work a sync pass can actually move. A blocked item waits on a
-        // resolution, not on another pass — counting it here would make
-        // `syncNow` reschedule itself every second for as long as it sits there.
-        pendingCount = state.outbox.count { $0.status != .blocked }
+        // Blocked items are waiting on a person, not on the network — counting
+        // them would leave the indicator stuck on "Saving…" forever.
+        pendingCount = state.outbox.filter { $0.status != .blocked }.count
         conflicts = state.conflicts.filter { !$0.resolved }
         lastSyncedAt = state.lastSyncedAt.flatMap(SyncTime.date)
     }

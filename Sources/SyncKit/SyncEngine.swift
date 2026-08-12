@@ -418,6 +418,7 @@ public actor SyncEngine {
             for folder in needed {
                 state.enqueue(OutboxItem(kind: .putFolder,
                                          recordKey: "folder:\(folder)",
+                                         folder: folder,
                                          nodeId: UUIDv7.string(),
                                          parentId: root,
                                          name: folder))
@@ -426,15 +427,120 @@ public actor SyncEngine {
         _ = try await pushOutbox()
     }
 
+    /// Re-points queued work at the tree as it actually is right now.
+    ///
+    /// An item is queued the instant you type, but by the time it's pushed the
+    /// mirror may have learned things: that the folder it targets already
+    /// exists under a different node id (another device, or a previous install,
+    /// created it), or that its file already exists at some version. Trusting
+    /// the ids captured at enqueue time produces `parent_not_found` rejections
+    /// and phantom conflicts that never drain. So parent, node id and
+    /// baseVersion are all resolved here, immediately before the push.
+    private func resolveOutboxAgainstMirror() throws {
+        guard let root = store.state.rootNodeId else { return }
+
+        try store.mutate { state in
+            var resolved: [OutboxItem] = []
+
+            for var item in state.outbox {
+                // A genuine content conflict is the user's to settle; leave it.
+                if item.status == .blocked && !item.isRetryableRejection {
+                    resolved.append(item)
+                    continue
+                }
+
+                let folderName = item.folder ?? Self.inferFolder(from: item.recordKey)
+                let before = item
+
+                switch item.kind {
+                case .putFolder:
+                    // Someone already made it — the intent is satisfied.
+                    if state.child(of: root, named: item.name) != nil { continue }
+
+                case .putFile:
+                    guard let folderName,
+                          let folderNode = state.child(of: root, named: folderName) else {
+                        break   // folder still unknown; the queued creation covers it
+                    }
+                    item.parentId = folderNode.nodeId
+                    if let existing = state.child(of: folderNode.nodeId, named: item.name) {
+                        // Update the node that's really there, at its real version.
+                        item.nodeId = existing.nodeId
+                        item.baseVersion = existing.version
+                    } else {
+                        item.baseVersion = nil   // a create, not an update
+                    }
+
+                case .delete:
+                    guard let folderName,
+                          let folderNode = state.child(of: root, named: folderName),
+                          let existing = state.child(of: folderNode.nodeId, named: item.name) else {
+                        continue   // already gone server-side; nothing to do
+                    }
+                    item.nodeId = existing.nodeId
+                    item.baseVersion = existing.version
+                }
+
+                if item != before {
+                    // A changed body is a *different* logical mutation. Keeping
+                    // the old `clientMutationId` earns an `idempotency_mismatch`
+                    // — the server remembers the id against its first content —
+                    // so this needs a fresh id as well as a fresh batch key.
+                    item.id = UUIDv7.string()
+                    item.status = .pending
+                    item.batchKey = nil
+                    item.lastProblem = nil
+                    item.uploadLocation = nil
+                    item.committedOffset = nil
+                    item.attempts = 0
+                } else if item.isRetryableRejection {
+                    // Nothing to re-point. Give it a bounded number of genuine
+                    // fresh attempts rather than either looping forever or
+                    // stranding it silently.
+                    let attempts = (item.attempts ?? 0) + 1
+                    guard attempts <= 3 else {
+                        resolved.append(item)
+                        continue
+                    }
+                    item.id = UUIDv7.string()
+                    item.attempts = attempts
+                    item.status = .pending
+                    item.batchKey = nil
+                    item.lastProblem = nil
+                }
+                resolved.append(item)
+            }
+
+            state.outbox = resolved
+
+            // Drop conflict records for work that no longer exists, and for
+            // folders — a folder name clash is not a content conflict.
+            state.conflicts.removeAll { record in
+                guard !record.resolved else { return false }
+                if record.recordKey.hasPrefix("folder:") { return true }
+                return !state.outbox.contains { $0.recordKey == record.recordKey }
+            }
+        }
+    }
+
+    /// Fallback for items queued before `folder` was recorded on them.
+    private static func inferFolder(from recordKey: String) -> String? {
+        if recordKey.hasPrefix("note:") { return notesFolder }
+        if recordKey.hasPrefix("drawing:") { return drawingsFolder }
+        if recordKey.hasPrefix("folder:") { return nil }
+        return nil
+    }
+
     /// Uploads any blobs the outbox needs, then submits mutations in batches.
     @discardableResult
     public func pushOutbox() async throws -> Int {
         phase = .pushing
         var pushed = 0
+        try resolveOutboxAgainstMirror()
 
         while true {
             // Folders first: a file mutation is pointless if its parent is unborn.
-            let queued = store.state.outbox
+            let ready = store.state.outbox
                 .filter { $0.status != .blocked }
                 .sorted { lhs, rhs in
                     if (lhs.kind == .putFolder) != (rhs.kind == .putFolder) {
@@ -442,13 +548,6 @@ public actor SyncEngine {
                     }
                     return lhs.id < rhs.id
                 }
-            // At most one write per record per batch. A record's second write is
-            // a descendant of its first, so it can only be submitted against the
-            // version that first write produces — which isn't known until it has
-            // been applied. Batching them together would make the server reject
-            // the second as a conflict with the first.
-            var batched = Set<String>()
-            let ready = queued.filter { batched.insert($0.recordKey).inserted }
             guard !ready.isEmpty else { break }
 
             let batch = Array(ready.prefix(effectiveBatchSize))
@@ -487,10 +586,11 @@ public actor SyncEngine {
             let applied = try apply(results: response.results, batch: batch)
             pushed += applied
 
-            // Nothing progressed — stop rather than spin. Anything still queued
-            // (a record's later write, or an item past the batch limit) is
-            // picked up by the next turn of this loop, which stops on an empty
-            // outbox rather than guessing that the work is done.
+            // Nothing progressed — stop rather than spin.
+            if applied == 0 && response.results.allSatisfy({
+                $0.status == .conflict || $0.status == .rejected
+            }) { break }
+            if batch.count == ready.count && applied == batch.count { break }
             if applied == 0 { break }
         }
         return pushed
@@ -511,29 +611,18 @@ public actor SyncEngine {
                         entry.mergeBaseBlobId = item.content.map { BlobRef(data: $0).id }
                             ?? state.mirror[node.id]?.mergeBaseBlobId
                         state.mirror[node.id] = entry
-
-                        // An edit queued while this write was in flight captured
-                        // its `baseVersion` from the pre-push mirror. It is a
-                        // descendant of the bytes we just wrote, so it inherits
-                        // the version this write produced. Without this it would
-                        // submit a stale version and the server would refuse it
-                        // as a conflict — with our own immediately prior edit.
-                        let successors = state.outbox.filter {
-                            $0.recordKey == item.recordKey
-                                && $0.id != item.id
-                                && $0.status == .pending
-                        }.map(\.id)
-                        for id in successors {
-                            state.updateOutboxItem(id: id) {
-                                $0.baseVersion = node.version
-                                $0.nodeId = node.id
-                            }
-                        }
                     }
                     state.removeOutboxItem(id: item.id)
                     applied += 1
 
                 case .conflict:
+                    if let current = result.currentNode, item.kind == .putFolder {
+                        // The folder is simply already there; adopt it and move on.
+                        state.applyToMirror(current)
+                        state.removeOutboxItem(id: item.id)
+                        applied += 1
+                        continue
+                    }
                     // Keep local intent; record the server's version; never
                     // overwrite it silently.
                     if let current = result.currentNode {
@@ -552,7 +641,7 @@ public actor SyncEngine {
                     }
                     state.updateOutboxItem(id: item.id) {
                         $0.status = .blocked
-                        $0.lastProblem = "conflict"
+                        $0.lastProblem = OutboxItem.conflictProblem
                     }
 
                 case .rejected:
@@ -664,17 +753,18 @@ public actor SyncEngine {
             ?? state.outbox.first { $0.recordKey == recordKey }?.nodeId
             ?? UUIDv7.string()
 
-        var item = OutboxItem(kind: .putFile, recordKey: recordKey, nodeId: nodeId,
-                              parentId: parentId, name: fileName, mediaType: mediaType,
-                              appProperties: appProperties, content: content,
-                              baseVersion: existing?.version)
+        var item = OutboxItem(kind: .putFile, recordKey: recordKey, folder: folder,
+                              nodeId: nodeId, parentId: parentId, name: fileName,
+                              mediaType: mediaType, appProperties: appProperties,
+                              content: content, baseVersion: existing?.version)
         item.clientModifiedAt = SyncTime.string(Date())
 
         if folderNodeId == nil && pendingFolder == nil {
             // Folder isn't known at all yet — queue it in the same transaction.
             try store.mutate { state in
                 state.enqueue(OutboxItem(kind: .putFolder, recordKey: "folder:\(folder)",
-                                         nodeId: parentId, parentId: root, name: folder))
+                                         folder: folder, nodeId: parentId,
+                                         parentId: root, name: folder))
                 state.enqueue(item)
             }
         } else {
@@ -695,9 +785,9 @@ public actor SyncEngine {
             }
             return
         }
-        let item = OutboxItem(kind: .delete, recordKey: recordKey, nodeId: existing.nodeId,
-                              parentId: folderNodeId, name: fileName,
-                              baseVersion: existing.version)
+        let item = OutboxItem(kind: .delete, recordKey: recordKey, folder: folder,
+                              nodeId: existing.nodeId, parentId: folderNodeId,
+                              name: fileName, baseVersion: existing.version)
         try store.mutate { $0.enqueue(item) }
     }
 
@@ -714,6 +804,7 @@ public actor SyncEngine {
 
             if let mergedContent, let entry = state.mirror[conflict.nodeId] {
                 var item = OutboxItem(kind: .putFile, recordKey: conflict.recordKey,
+                                      folder: Self.inferFolder(from: conflict.recordKey),
                                       nodeId: conflict.nodeId, parentId: entry.parentId,
                                       name: entry.name, mediaType: entry.mediaType,
                                       appProperties: entry.appProperties,

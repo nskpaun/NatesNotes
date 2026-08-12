@@ -84,6 +84,9 @@ public struct OutboxItem: Codable, Equatable, Sendable {
     public var uploadExpiresAt: String?
     public var committedOffset: Int?
     public var lastProblem: String?
+    /// Bounded retry counter for rejections that re-resolution can't explain.
+    /// Optional so older state files still decode.
+    public var attempts: Int?
 
     public var expectedBlob: BlobRef? {
         guard let content else { return nil }

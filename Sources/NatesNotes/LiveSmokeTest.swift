@@ -12,6 +12,55 @@ import SyncKit
 /// app's Keychain entry and sync state are never touched.
 enum LiveSmokeTest {
 
+    /// Runs exactly one sync against the app's real state and reports what
+    /// happened at each step. For diagnosing a stuck outbox in the field.
+    static func diagnose() async {
+        let directory = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("NatesNotes/sync", isDirectory: true)
+        print("state: \(directory.path)")
+
+        let credentials = KeychainCredentialStore()
+        do {
+            let token = try credentials.token()
+            print("keychain token: \(token == nil ? "MISSING" : "present (\(token!.count) chars)")")
+        } catch {
+            print("keychain token: UNREADABLE — \(error)")
+        }
+
+        do {
+            let store = try SyncStateStore(directory: directory)
+            let blobs = try BlobStore(directory: directory.appendingPathComponent("blobs"))
+            let settings = SyncSettings.standard()
+            let engine = SyncEngine(transport: HTTPSyncTransport(settings: settings,
+                                                                 credentials: credentials),
+                                    store: store, blobs: blobs,
+                                    credentials: credentials, settings: settings)
+
+            func dump(_ label: String) {
+                let outbox = store.state.outbox
+                print("\n\(label): \(outbox.count) item(s)")
+                for item in outbox {
+                    print("  \(item.recordKey.prefix(28)) | \(item.status.rawValue)"
+                          + " | folder \(item.folder ?? "nil")"
+                          + " | attempts \(item.attempts ?? 0)"
+                          + " | \((item.lastProblem ?? "").prefix(60))")
+                }
+            }
+
+            dump("before")
+            print("\nsyncing…")
+            let outcome = try await engine.sync()
+            print("pushed \(outcome.pushed), pulled \(outcome.updated.count),"
+                  + " removed \(outcome.removed.count)")
+            dump("after")
+        } catch {
+            print("\nsync failed: \(describe(error))")
+        }
+        exit(0)
+    }
+
+
     static func run(code: String, keep: Bool) async {
         var failures = 0
         var checks = 0

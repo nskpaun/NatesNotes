@@ -25,6 +25,9 @@ final class FakeServer: SyncTransport, @unchecked Sendable {
     private(set) var changeLog: [NodeChange] = []
     private var uploads: [String: (expectedLength: Int, digest: String, data: Data)] = [:]
     private var idempotency: [String: MutationResponse] = [:]
+    /// clientMutationId → the body it was first used with. The real server
+    /// rejects a reused mutation id whose content changed, so the fake must too.
+    private var mutationBodies: [String: String] = [:]
     private var snapshots: [String: [String]] = [:]      // token → ordered node ids
     private var codeUsed = false
 
@@ -320,12 +323,34 @@ final class FakeServer: SyncTransport, @unchecked Sendable {
 
         var results: [MutationResult] = []
         for mutation in mutations {
+            // Reusing a clientMutationId with different content is a protocol
+            // violation, not a retry.
+            let signature = String(data: CanonicalJSON.encode(mutation.json()),
+                                   encoding: .utf8) ?? ""
+            if let seen = mutationBodies[mutation.clientMutationId], seen != signature {
+                results.append(MutationResult(
+                    clientMutationId: mutation.clientMutationId,
+                    status: .rejected,
+                    problem: .object(["code": .string("idempotency_mismatch"),
+                                      "title": .string("Mutation ID was reused with different content")])))
+                continue
+            }
+            mutationBodies[mutation.clientMutationId] = signature
+
             switch mutation.operation {
             case .put:
                 guard let desired = mutation.node else {
                     results.append(MutationResult(clientMutationId: mutation.clientMutationId,
                                                   status: .rejected,
                                                   problem: .string("missing node")))
+                    continue
+                }
+                // The real server refuses a node whose parent it doesn't know.
+                if let parent = desired.parentId, nodes[parent] == nil || nodes[parent]!.isTombstone {
+                    results.append(MutationResult(
+                        clientMutationId: mutation.clientMutationId,
+                        status: .rejected,
+                        problem: .object(["code": .string("parent_not_found")])))
                     continue
                 }
                 if desired.kind == .file, let blob = desired.blob, blobs[blob.id] == nil {

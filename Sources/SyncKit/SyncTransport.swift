@@ -94,14 +94,25 @@ public struct SyncSettings: Sendable, Equatable {
         self.uploadChunkSize = uploadChunkSize
     }
 
-    /// Placeholder endpoint. Point this at your own Personal File Sync server
-    /// with `SYNC_BASE_URL`, or edit this constant for a local build. Whatever
-    /// it is set to, TLS validation is never bypassed.
+    /// Where this key lives in `UserDefaults`. Kept out of source so a public
+    /// checkout never carries someone's home-server address.
+    public static let baseURLDefaultsKey = "nn.syncBaseURL"
+
+    /// Placeholder only. The real address is supplied at runtime — set it in
+    /// the app's sync panel, or via `SYNC_BASE_URL`. Whatever it is set to,
+    /// TLS validation is never bypassed.
     public static let defaultBaseURL = URL(string: "https://sync.example.com")!
 
+    /// Resolution order: environment, then the stored setting, then the
+    /// placeholder. The environment wins so a one-off run can point elsewhere
+    /// without disturbing the saved configuration.
     public static func standard() -> SyncSettings {
         if let override = ProcessInfo.processInfo.environment["SYNC_BASE_URL"],
            let url = URL(string: override) {
+            return SyncSettings(baseURL: url)
+        }
+        if let stored = UserDefaults.standard.string(forKey: baseURLDefaultsKey),
+           let url = URL(string: stored), url.host != nil {
             return SyncSettings(baseURL: url)
         }
         return SyncSettings(baseURL: defaultBaseURL)
