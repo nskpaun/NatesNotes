@@ -40,6 +40,7 @@ struct SyncSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var code = ""
+    @State private var server = ""
     @State private var working = false
     @State private var message: String?
 
@@ -66,6 +67,23 @@ struct SyncSheet: View {
                 }
 
                 if !isPaired {
+                    Section {
+                        TextField("sync.example.com", text: $server)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                        Button("Use this server") {
+                            sync.setServer(server)
+                            server = ""
+                        }
+                        .disabled(server.trimmingCharacters(in: .whitespaces).isEmpty)
+                    } header: {
+                        Text("Server")
+                    } footer: {
+                        Text("Currently \(sync.serverDescription). The address is kept "
+                             + "on this iPhone, not built into the app.")
+                    }
+
                     Section {
                         TextField("PAIRING-CODE", text: $code)
                             .textInputAutocapitalization(.characters)

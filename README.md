@@ -130,7 +130,8 @@ The design decisions, wire format and conflict policy are written up in
   URLs or the app's own state file.
 - Notes stay fully usable with sync off, unpaired, or unreachable.
 
-The server is compiled in. `SYNC_BASE_URL` still overrides it for a staging run.
+Set the server in the app's sync panel; it is stored on the machine, never
+compiled in. `SYNC_BASE_URL` overrides it for a one-off run.
 TLS validation is never disabled and no private CA is installed.
 
 ```bash

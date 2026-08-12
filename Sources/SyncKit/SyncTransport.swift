@@ -94,8 +94,10 @@ public struct SyncSettings: Sendable, Equatable {
         self.uploadChunkSize = uploadChunkSize
     }
 
-    /// The deployment this build talks to. `SYNC_BASE_URL` still overrides it
-    /// for a staging run; TLS validation is never bypassed either way.
+    /// Placeholder only. A real address is a fact about someone's network, so
+    /// it is configured on the machine — see `standard()` — rather than
+    /// compiled in where it would be published with the source. TLS validation
+    /// is never bypassed whatever it is set to.
     public static let defaultBaseURL = URL(string: "https://sync.invalid")!
 
     /// Where the address is stored on this machine.

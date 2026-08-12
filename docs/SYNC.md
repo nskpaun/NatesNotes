@@ -7,8 +7,8 @@ record, plus the reasoning behind each.
 ## 0. Ground rules inherited from the handoff
 
 - The base URL lives at the transport boundary only (`SyncSettings.baseURL`),
-  never in domain code. The deployment is compiled in; `SYNC_BASE_URL`
-  overrides it so the app can point at a staging host.
+  never in domain code. The address is configured per machine and kept out of
+  the source; `SYNC_BASE_URL` overrides it for a one-off run.
 - TLS validation is never disabled and no private CA is installed — the
   deployment presents a publicly valid certificate, so the system default is
   exactly right. Verified: `ssl_verify_result=0` against the live host.
