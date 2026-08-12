@@ -51,6 +51,19 @@ final class SyncController: ObservableObject {
 
     var installationId: String { currentState.installationId }
 
+    /// The configured server, for display.
+    var serverDescription: String { settings.baseURL.absoluteString }
+
+    /// Stores where to sync. Changing it drops the pairing, since a device
+    /// token only means anything to the server that issued it.
+    func setServer(_ address: String) {
+        var trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.contains("://") { trimmed = "https://" + trimmed }
+        guard let url = URL(string: trimmed), url.host != nil else { return }
+        UserDefaults.standard.set(url.absoluteString, forKey: SyncSettings.baseURLDefaultsKey)
+        Task { await unpair() }
+    }
+
     init(notes: NoteStore, settings: SyncSettings = .standard(), root: URL? = nil) {
         let directory = root ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

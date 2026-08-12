@@ -428,9 +428,106 @@ public actor SyncEngine {
 
     /// Uploads any blobs the outbox needs, then submits mutations in batches.
     @discardableResult
+    /// Which folder a record belongs in, from its key.
+    private static func folderName(forRecord recordKey: String) -> String? {
+        if recordKey.hasPrefix("note:") { return notesFolder }
+        if recordKey.hasPrefix("drawing:") { return drawingsFolder }
+        return nil
+    }
+
+    /// Re-points queued work at the tree as it actually is right now.
+    ///
+    /// An item is queued the moment you type, but the ids it captured were only
+    /// guesses if the mirror was still empty — which it is for everything
+    /// enqueued before the first snapshot. If the space already holds `notes/`
+    /// under a different node id, every one of those items names a parent the
+    /// server has never heard of and comes back `parent_not_found` on every
+    /// pass, forever. Resolving parent, node id and baseVersion here, against
+    /// what the mirror now says, is what stops that being permanent.
+    private func reconcileOutboxWithMirror() throws {
+        guard let root = store.state.rootNodeId else { return }
+
+        try store.mutate { state in
+            var kept: [OutboxItem] = []
+
+            for var item in state.outbox {
+                // A real content clash belongs to the user, not to this pass.
+                if item.status == .blocked && item.lastProblem == "conflict" {
+                    kept.append(item)
+                    continue
+                }
+                // A body already in flight is frozen under its idempotency key.
+                if item.status == .inFlight {
+                    kept.append(item)
+                    continue
+                }
+
+                let before = item
+
+                switch item.kind {
+                case .putFolder:
+                    // Someone already created it; the intent is satisfied.
+                    if state.child(of: root, named: item.name) != nil { continue }
+
+                case .putFile, .delete:
+                    guard let folderName = Self.folderName(forRecord: item.recordKey),
+                          let folder = state.child(of: root, named: folderName) else {
+                        break   // folder still unknown; its queued creation covers it
+                    }
+                    item.parentId = folder.nodeId
+                    if let existing = state.child(of: folder.nodeId, named: item.name) {
+                        item.nodeId = existing.nodeId
+                        item.baseVersion = existing.version
+                    } else if item.kind == .delete {
+                        continue   // already gone server-side
+                    } else {
+                        item.baseVersion = nil   // a create, not an update
+                    }
+                }
+
+                if item != before {
+                    // Changed content makes this a *different* logical mutation.
+                    // Reusing the old `clientMutationId` earns an
+                    // `idempotency_mismatch`, because the server remembers that
+                    // id against the bytes it first carried.
+                    item.id = UUIDv7.string()
+                    item.status = .pending
+                    item.batchKey = nil
+                    item.lastProblem = nil
+                    item.uploadLocation = nil
+                    item.committedOffset = nil
+                    item.attempts = 0
+                } else if item.status == .blocked {
+                    // A rejection this pass can't explain. Give it a bounded
+                    // number of genuine fresh attempts rather than looping or
+                    // stranding it silently.
+                    let attempts = (item.attempts ?? 0) + 1
+                    guard attempts <= 3 else {
+                        kept.append(item)
+                        continue
+                    }
+                    item.id = UUIDv7.string()
+                    item.attempts = attempts
+                    item.status = .pending
+                    item.batchKey = nil
+                    item.lastProblem = nil
+                }
+
+                kept.append(item)
+            }
+
+            state.outbox = kept
+
+            // A folder name clash is "it already exists", never something for a
+            // person to merge.
+            state.conflicts.removeAll { !$0.resolved && $0.recordKey.hasPrefix("folder:") }
+        }
+    }
+
     public func pushOutbox() async throws -> Int {
         phase = .pushing
         var pushed = 0
+        try reconcileOutboxWithMirror()
 
         while true {
             // Folders first: a file mutation is pointless if its parent is unborn.

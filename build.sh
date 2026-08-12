@@ -55,8 +55,29 @@ if [ -f "Resources/AppIcon.icns" ]; then
 fi
 
 # Ad-hoc signature so macOS treats it as a stable, launchable app.
-codesign --force --deep --sign - "$APP" 2>/dev/null || \
-    echo "  (ad-hoc signing skipped)"
+# Sign with a stable identity when one is available.
+#
+# An ad-hoc signature is derived from the binary, so every rebuild produces a
+# *different* one. The Keychain binds an item's access control to the signature
+# of the app that created it, so with ad-hoc signing macOS sees a brand-new
+# application after each build and asks for permission to read the sync token
+# again — repeatedly, since a sync makes many authenticated requests. A real
+# identity keeps that requirement stable, so "Always Allow" sticks.
+IDENTITY="${CODESIGN_IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+    IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -m1 "Apple Development" \
+        | sed -n 's/.*"\(.*\)"/\1/p')
+fi
+
+if [ -n "$IDENTITY" ]; then
+    echo "▸ Signing as: $IDENTITY"
+    codesign --force --deep --sign "$IDENTITY" "$APP" 2>/dev/null \
+        || codesign --force --deep --sign - "$APP" 2>/dev/null
+else
+    echo "  (no signing identity found — using ad-hoc; expect Keychain prompts)"
+    codesign --force --deep --sign - "$APP" 2>/dev/null || true
+fi
 
 echo "▸ Done: $(pwd)/$APP"
 

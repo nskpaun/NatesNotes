@@ -18,10 +18,29 @@ public final class KeychainCredentialStore: CredentialStore, @unchecked Sendable
     private let service: String
     private let account: String
 
+    /// The token, held for the life of the process once read.
+    ///
+    /// Every authenticated request needs it, and a sync makes dozens — a
+    /// snapshot page, each blob HEAD, each upload chunk, the mutation batch.
+    /// Reading the Keychain each time means macOS may put an authorisation
+    /// prompt in front of *every one of them*, and each prompt blocks the sync
+    /// task that is waiting on it. Reading once per launch costs nothing and
+    /// makes at most one prompt possible.
+    private var cached: String?
+    private var didLoad = false
+    private let lock = NSLock()
+
     public init(service: String = "com.natespaun.natesnotes.sync",
                 account: String = "device-token") {
         self.service = service
         self.account = account
+    }
+
+    /// Forgets the in-memory copy, so the next read goes back to the Keychain.
+    public func invalidateCache() {
+        lock.lock(); defer { lock.unlock() }
+        cached = nil
+        didLoad = false
     }
 
     private var baseQuery: [String: Any] {
@@ -33,6 +52,23 @@ public final class KeychainCredentialStore: CredentialStore, @unchecked Sendable
     }
 
     public func token() throws -> String? {
+        lock.lock()
+        if didLoad {
+            defer { lock.unlock() }
+            return cached
+        }
+        lock.unlock()
+
+        let value = try readFromKeychain()
+
+        lock.lock()
+        cached = value
+        didLoad = true
+        lock.unlock()
+        return value
+    }
+
+    private func readFromKeychain() throws -> String? {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -51,6 +87,11 @@ public final class KeychainCredentialStore: CredentialStore, @unchecked Sendable
     }
 
     public func setToken(_ token: String?) throws {
+        lock.lock()
+        cached = token
+        didLoad = true
+        lock.unlock()
+
         guard let token else {
             let status = SecItemDelete(baseQuery as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else {

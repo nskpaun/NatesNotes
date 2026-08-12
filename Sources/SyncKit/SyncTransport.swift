@@ -99,9 +99,18 @@ public struct SyncSettings: Sendable, Equatable {
     /// it is set to, TLS validation is never bypassed.
     public static let defaultBaseURL = URL(string: "https://sync.example.com")!
 
+    /// Where the address is stored on this machine.
+    public static let baseURLDefaultsKey = "nn.syncBaseURL"
+
+    /// Environment first (a one-off run), then the stored setting, then the
+    /// placeholder above.
     public static func standard() -> SyncSettings {
         if let override = ProcessInfo.processInfo.environment["SYNC_BASE_URL"],
            let url = URL(string: override) {
+            return SyncSettings(baseURL: url)
+        }
+        if let stored = UserDefaults.standard.string(forKey: baseURLDefaultsKey),
+           let url = URL(string: stored), url.host != nil {
             return SyncSettings(baseURL: url)
         }
         return SyncSettings(baseURL: defaultBaseURL)

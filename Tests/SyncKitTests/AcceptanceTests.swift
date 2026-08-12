@@ -641,4 +641,95 @@ final class AcceptanceTests: XCTestCase {
         XCTAssertNotNil(storeC.state.lastCommittedCursor)
         XCTAssertGreaterThan(server.listNodeCalls, 2, "should have taken several pages")
     }
+
+    // MARK: - Regression: intent queued before the tree is known
+
+    /// Pairing enqueues the library *before* the first snapshot, so folder ids
+    /// are guesses. If the space already holds `notes/` under a different id,
+    /// every one of those items named a parent the server had never heard of
+    /// and came back `parent_not_found` on every pass, forever.
+    func test17_intentQueuedBeforeSnapshotIsRepointed() async throws {
+        let existingNotes = server.seedFolder(name: "notes", parentId: server.rootNodeId)
+        server.seedFolder(name: "drawings", parentId: server.rootNodeId)
+
+        let (engine, store) = try await makePairedEngine()
+
+        for i in 0..<3 {
+            try await engine.enqueueUpsert(recordKey: "note:\(i)", folder: "notes",
+                                           fileName: "n\(i).json",
+                                           mediaType: "application/json",
+                                           appProperties: [:],
+                                           content: note("n\(i)", body: "queued early"))
+        }
+        XCTAssertNotEqual(store.state.outbox.first { $0.kind == .putFile }?.parentId,
+                          existingNotes.id,
+                          "precondition: the queued parent is a provisional guess")
+
+        _ = try await engine.sync()
+
+        XCTAssertTrue(store.state.outbox.isEmpty,
+                      "items must be re-pointed and drain, not strand")
+        XCTAssertTrue(store.state.conflicts.filter { !$0.resolved }.isEmpty,
+                      "an existing folder is not a content conflict")
+        for i in 0..<3 {
+            XCTAssertNotNil(server.node(named: "n\(i).json", in: existingNotes.id))
+        }
+    }
+
+    /// The same repair has to rescue items already stranded on disk, since a
+    /// shipped build meets users in that state. The subtle part: such an item
+    /// was already submitted under its `clientMutationId`, so re-pointing it
+    /// changes the body and needs a *fresh* id — reusing one earns
+    /// `idempotency_mismatch`.
+    func test18_strandedItemsRecoverWithAFreshMutationId() async throws {
+        let realNotes = server.seedFolder(name: "notes", parentId: server.rootNodeId)
+        let (engine, store) = try await makePairedEngine()
+
+        try store.mutate { state in
+            state.outbox = [OutboxItem(kind: .putFile, recordKey: "note:z",
+                                       nodeId: UUIDv7.string(),
+                                       parentId: UUIDv7.string(),   // never existed
+                                       name: "z.json",
+                                       mediaType: "application/json",
+                                       content: self.note("z", body: "stranded"))]
+        }
+        let originalId = store.state.outbox.first?.id
+
+        // Push while the tree is unknown: rejected, and the id is now spent.
+        _ = try await engine.pushOutbox()
+        XCTAssertEqual(store.state.outbox.first?.status, .blocked,
+                       "precondition: a bad parent is rejected")
+
+        // Now the app learns the real tree.
+        _ = try await engine.sync()
+
+        XCTAssertTrue(store.state.outbox.isEmpty,
+                      "recovery must not loop on idempotency_mismatch")
+        XCTAssertNotNil(server.node(named: "z.json", in: realNotes.id))
+        _ = originalId
+    }
+
+    /// Recovery must not sweep up a genuine clash.
+    func test19_realConflictsSurviveRecovery() async throws {
+        let (engine, store) = try await makePairedEngine()
+        try await engine.takeSnapshot()
+        try await engine.enqueueUpsert(recordKey: "note:a", folder: "notes",
+                                       fileName: "a.json", mediaType: "application/json",
+                                       appProperties: [:], content: note("a", body: "mine"))
+        _ = try await engine.sync()
+
+        let folder = try XCTUnwrap(server.node(named: "notes", in: server.rootNodeId))
+        let current = try XCTUnwrap(server.node(named: "a.json", in: folder.id))
+        server.seedFile(name: "a.json", parentId: folder.id,
+                        content: note("a", body: "theirs"), nodeId: current.id)
+
+        try await engine.enqueueUpsert(recordKey: "note:a", folder: "notes",
+                                       fileName: "a.json", mediaType: "application/json",
+                                       appProperties: [:], content: note("a", body: "mine again"))
+        _ = try? await engine.sync()
+
+        XCTAssertEqual(store.state.conflicts.filter { !$0.resolved }.count, 1)
+        XCTAssertTrue(store.state.outbox.contains { $0.lastProblem == "conflict" },
+                      "a real conflict stays parked for the user")
+    }
 }
