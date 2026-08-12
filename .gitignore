@@ -1,0 +1,16 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Built app bundle — produced by ./build.sh
+NatesNotes.app/
+
+# macOS
+.DS_Store
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
