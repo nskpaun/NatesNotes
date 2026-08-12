@@ -1,4 +1,9 @@
+import Foundation
+#if canImport(AppKit)
 import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 extension NSAttributedString.Key {
     /// Marks syntax characters that should collapse to zero width when the caret

@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(AppKit)
 import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - Element vocabulary
 
@@ -118,9 +122,9 @@ struct Drawing: Codable, Equatable {
 
 // MARK: - Color helpers
 
-extension NSColor {
+extension PlatformColor {
     /// Parses `#RGB`, `#RRGGBB`, `#RRGGBBAA` and the literal `transparent`.
-    static func fromHex(_ s: String) -> NSColor? {
+    static func fromHex(_ s: String) -> PlatformColor? {
         if s == "transparent" { return nil }
         var str = s.trimmingCharacters(in: .whitespaces)
         if str.hasPrefix("#") { str.removeFirst() }
@@ -130,11 +134,11 @@ extension NSColor {
         guard let v = UInt64(str, radix: 16) else { return nil }
         switch str.count {
         case 6:
-            return NSColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
+            return PlatformColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
                            green: CGFloat((v >> 8) & 0xFF) / 255,
                            blue: CGFloat(v & 0xFF) / 255, alpha: 1)
         case 8:
-            return NSColor(srgbRed: CGFloat((v >> 24) & 0xFF) / 255,
+            return PlatformColor(srgbRed: CGFloat((v >> 24) & 0xFF) / 255,
                            green: CGFloat((v >> 16) & 0xFF) / 255,
                            blue: CGFloat((v >> 8) & 0xFF) / 255,
                            alpha: CGFloat(v & 0xFF) / 255)
@@ -151,16 +155,16 @@ enum Palette {
     static let fills   = ["transparent", "#FFC9C9", "#B2F2BB", "#A5D8FF", "#FFEC99", "#E5DBFF", "#C5F6FA"]
 
     /// Dark mode needs the near-black stroke swapped for a near-white one.
-    static func resolveStroke(_ hex: String, isDark: Bool) -> NSColor {
-        if hex == "#1F1F1E" && isDark { return NSColor(srgbRed: 0.93, green: 0.93, blue: 0.92, alpha: 1) }
-        return NSColor.fromHex(hex) ?? .labelColor
+    static func resolveStroke(_ hex: String, isDark: Bool) -> PlatformColor {
+        if hex == "#1F1F1E" && isDark { return PlatformColor(srgbRed: 0.93, green: 0.93, blue: 0.92, alpha: 1) }
+        return PlatformColor.fromHex(hex) ?? .platformLabel
     }
 
     /// On a dark canvas the pastels blow out, so they get pulled back — but thin
     /// hachure strokes need much more of the colour left in them than a solid
     /// wash does, or they read as plain grey.
-    static func resolveFill(_ hex: String, isDark: Bool, isLineWork: Bool = false) -> NSColor? {
-        guard let c = NSColor.fromHex(hex) else { return nil }
+    static func resolveFill(_ hex: String, isDark: Bool, isLineWork: Bool = false) -> PlatformColor? {
+        guard let c = PlatformColor.fromHex(hex) else { return nil }
         guard isDark else { return c }
         return c.withAlphaComponent(isLineWork ? 0.72 : 0.35)
     }

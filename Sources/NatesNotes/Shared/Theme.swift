@@ -1,5 +1,10 @@
 import SwiftUI
+import Foundation
+#if canImport(AppKit)
 import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// The two working states. Everything accent-coloured keys off this, so
 /// switching modes re-tints the whole app in one move.
@@ -12,11 +17,11 @@ enum AppMode: String, Codable {
     var symbol: String { self == .chill ? "water.waves" : "target" }
 
     /// Cool blue when thinking, warm amber when executing.
-    var accent: NSColor {
+    var accent: PlatformColor {
         self == .chill ? OKLCH(0.78, 0.13, 250).nsColor : OKLCH(0.80, 0.13, 78).nsColor
     }
 
-    var accentBright: NSColor {
+    var accentBright: PlatformColor {
         self == .chill ? OKLCH(0.87, 0.11, 250).nsColor : OKLCH(0.90, 0.10, 78).nsColor
     }
 
@@ -32,7 +37,7 @@ struct OKLCH {
         self.l = l; self.c = c; self.h = h; self.alpha = alpha
     }
 
-    var nsColor: NSColor {
+    var nsColor: PlatformColor {
         let hRad = h * .pi / 180
         let a = c * cos(hRad)
         let b = c * sin(hRad)
@@ -53,7 +58,7 @@ struct OKLCH {
             return clamped <= 0.0031308 ? 12.92 * clamped
                                         : 1.055 * pow(clamped, 1 / 2.4) - 0.055
         }
-        return NSColor(srgbRed: encode(r), green: encode(g), blue: encode(bl), alpha: alpha)
+        return PlatformColor(srgbRed: encode(r), green: encode(g), blue: encode(bl), alpha: alpha)
     }
 
     var color: Color { Color(nsColor: nsColor) }
@@ -69,20 +74,20 @@ enum Theme {
     /// themselves without threading the environment through AppKit.
     nonisolated(unsafe) static var mode: AppMode = .chill
 
-    static var accent: NSColor { mode.accent }
-    static var accentBright: NSColor { mode.accentBright }
+    static var accent: PlatformColor { mode.accent }
+    static var accentBright: PlatformColor { mode.accentBright }
 
     // MARK: - Palette
 
-    private static func hex(_ v: UInt32, _ a: CGFloat = 1) -> NSColor {
-        NSColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
+    private static func hex(_ v: UInt32, _ a: CGFloat = 1) -> PlatformColor {
+        PlatformColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
                 green: CGFloat((v >> 8) & 0xFF) / 255,
                 blue: CGFloat(v & 0xFF) / 255,
                 alpha: a)
     }
 
-    private static func white(_ a: CGFloat) -> NSColor {
-        NSColor(srgbRed: 1, green: 1, blue: 1, alpha: a)
+    private static func white(_ a: CGFloat) -> PlatformColor {
+        PlatformColor(srgbRed: 1, green: 1, blue: 1, alpha: a)
     }
 
     // Surfaces
@@ -92,7 +97,7 @@ enum Theme {
     static let sidebarBG  = hex(0x090C14)
     static let raisedBG   = hex(0x141926)
     static let sunkenBG   = hex(0x070910)
-    static let scrimBG    = NSColor(srgbRed: 0.02, green: 0.03, blue: 0.05, alpha: 0.62)
+    static let scrimBG    = PlatformColor(srgbRed: 0.02, green: 0.03, blue: 0.05, alpha: 0.62)
 
     static let hoverBG    = white(0.05)
     static let selectedBG = white(0.075)
@@ -107,47 +112,42 @@ enum Theme {
     static let syntaxMarker  = white(0.22)
 
     // Editorial
-    static var codeText: NSColor { OKLCH(0.82, 0.11, 30).nsColor }
+    static var codeText: PlatformColor { OKLCH(0.82, 0.11, 30).nsColor }
     static let codeBG      = white(0.045)
-    static var quoteBar: NSColor { accent.withAlphaComponent(0.55) }
-    static var highlightBG: NSColor { accent.withAlphaComponent(0.20) }
-    static var checkDone: NSColor { accent }
+    static var quoteBar: PlatformColor { accent.withAlphaComponent(0.55) }
+    static var highlightBG: PlatformColor { accent.withAlphaComponent(0.20) }
+    static var checkDone: PlatformColor { accent }
     static let dotGrid     = white(0.065)
 
     // MARK: - Typography
 
     /// Editorial serif for display text — New York is the system serif and is
     /// the closest native stand-in for the design's Newsreader.
-    static func serif(_ size: CGFloat, weight: NSFont.Weight = .medium) -> NSFont {
-        let base = NSFont.systemFont(ofSize: size, weight: weight)
+    static func serif(_ size: CGFloat, weight: PlatformFont.Weight = .medium) -> PlatformFont {
+        let base = PlatformFont.systemFont(ofSize: size, weight: weight)
         guard let descriptor = base.fontDescriptor.withDesign(.serif) else { return base }
-        return NSFont(descriptor: descriptor, size: size) ?? base
+        return PlatformFont.from(descriptor: descriptor, size: size, fallback: base)
     }
 
-    static func body(_ size: CGFloat = 15.5, weight: NSFont.Weight = .regular) -> NSFont {
-        NSFont.systemFont(ofSize: size, weight: weight)
+    static func body(_ size: CGFloat = 15.5, weight: PlatformFont.Weight = .regular) -> PlatformFont {
+        PlatformFont.systemFont(ofSize: size, weight: weight)
     }
 
-    static func mono(_ size: CGFloat = 12, weight: NSFont.Weight = .regular) -> NSFont {
-        NSFont.monospacedSystemFont(ofSize: size, weight: weight)
+    static func mono(_ size: CGFloat = 12, weight: PlatformFont.Weight = .regular) -> PlatformFont {
+        PlatformFont.monospacedSystemFont(ofSize: size, weight: weight)
     }
 
     /// Hand-drawn face for sketch text, matching the design's Caveat.
-    static func hand(_ size: CGFloat) -> NSFont {
+    static func hand(_ size: CGFloat) -> PlatformFont {
         for name in ["Caveat", "Bradley Hand", "Chalkboard SE", "Marker Felt", "Noteworthy"] {
-            if let font = NSFont(name: name, size: size) { return font }
+            if let font = PlatformFont(name: name, size: size) { return font }
         }
         return serif(size, weight: .regular)
     }
 
-    static func italic(_ font: NSFont) -> NSFont {
-        let d = font.fontDescriptor.withSymbolicTraits(.italic)
-        return NSFont(descriptor: d, size: font.pointSize) ?? font
-    }
+    static func italic(_ font: PlatformFont) -> PlatformFont { font.withTrait(italic: true) }
 
-    static func bold(_ font: NSFont) -> NSFont {
-        NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
-    }
+    static func bold(_ font: PlatformFont) -> PlatformFont { font.withTrait(bold: true) }
 
     // MARK: - Metrics
 
@@ -162,7 +162,7 @@ enum Theme {
 // MARK: - SwiftUI bridges
 
 extension Color {
-    init(_ ns: NSColor) { self = Color(nsColor: ns) }
+    init(_ ns: PlatformColor) { self = Color(nsColor: ns) }
 }
 
 extension Theme {

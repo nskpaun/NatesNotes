@@ -1,4 +1,9 @@
+import Foundation
+#if canImport(AppKit)
 import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// Applies live-preview styling to the raw markdown in an `NSTextStorage`.
 ///
@@ -351,7 +356,7 @@ enum MarkdownStyler {
     }
 
     private static func styleInline(_ storage: NSTextStorage, in range: NSRange,
-                                    text: NSString, isActive: Bool, baseFont: NSFont) {
+                                    text: NSString, isActive: Bool, baseFont: PlatformFont) {
         guard range.length > 0, range.upperBound <= text.length else { return }
         let substring = text.substring(with: range)
         let local = NSRange(location: 0, length: (substring as NSString).length)
@@ -414,7 +419,7 @@ enum MarkdownStyler {
             claimed.append(whole)
             let inner = offset(m.range(at: 2))
             let existing = storage.attribute(.font, at: inner.location,
-                                             effectiveRange: nil) as? NSFont ?? baseFont
+                                             effectiveRange: nil) as? PlatformFont ?? baseFont
             storage.addAttribute(.font, value: Theme.italic(existing), range: inner)
             hideDelimiters(storage, whole: offset(whole), inner: inner, width: 1, active: isActive)
         }

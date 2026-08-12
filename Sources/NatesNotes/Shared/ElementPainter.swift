@@ -1,40 +1,23 @@
+#if canImport(AppKit)
 import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
-extension NSBezierPath {
+extension BezierPath {
     /// A copy containing only the first `fraction` of this path's length.
     ///
     /// Flattening first means curves, multi-pass sketch strokes and arrowheads
     /// all trim uniformly, so a shape reveals in the order it was drawn.
-    func trimmed(to fraction: CGFloat) -> NSBezierPath {
+    func trimmed(to fraction: CGFloat) -> BezierPath {
         guard fraction < 0.999 else { return self }
-        let result = NSBezierPath()
+        let result = BezierPath()
         result.lineWidth = lineWidth
         result.lineCapStyle = lineCapStyle
         result.lineJoinStyle = lineJoinStyle
         guard fraction > 0.001 else { return result }
 
-        // Break the flattened path into polylines.
-        let flat = flattened
-        var subpaths: [[CGPoint]] = []
-        var current: [CGPoint] = []
-        var points = [NSPoint](repeating: .zero, count: 3)
-
-        for index in 0..<flat.elementCount {
-            switch flat.element(at: index, associatedPoints: &points) {
-            case .moveTo:
-                if current.count > 1 { subpaths.append(current) }
-                current = [points[0]]
-            case .lineTo:
-                current.append(points[0])
-            case .closePath:
-                if let first = current.first { current.append(first) }
-                if current.count > 1 { subpaths.append(current) }
-                current = []
-            default:
-                break
-            }
-        }
-        if current.count > 1 { subpaths.append(current) }
+        let subpaths = polylines()
 
         let total = subpaths.reduce(CGFloat(0)) { sum, line in
             sum + zip(line, line.dropFirst()).reduce(CGFloat(0)) {
@@ -74,13 +57,13 @@ enum ElementPainter {
 
     private static let handCandidates = ["Virgil", "Bradley Hand", "Chalkboard SE", "Marker Felt", "Noteworthy"]
 
-    static func font(for e: DrawElement) -> NSFont {
+    static func font(for e: DrawElement) -> PlatformFont {
         if e.handwritten {
             for name in handCandidates {
-                if let f = NSFont(name: name, size: e.fontSize) { return f }
+                if let f = PlatformFont(name: name, size: e.fontSize) { return f }
             }
         }
-        return NSFont.systemFont(ofSize: e.fontSize, weight: .regular)
+        return PlatformFont.systemFont(ofSize: e.fontSize, weight: .regular)
     }
 
     static func attributes(for e: DrawElement, isDark: Bool) -> [NSAttributedString.Key: Any] {
@@ -112,19 +95,19 @@ enum ElementPainter {
         guard reveal > 0.001 else { return }
         guard reveal < 0.999 else { return draw(e, isDark: isDark) }
 
-        guard let ctx = NSGraphicsContext.current else { return }
-        ctx.saveGraphicsState()
-        defer { ctx.restoreGraphicsState() }
+        guard let ctx = Graphics.current else { return }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
 
-        ctx.cgContext.setLineCap(.round)
-        ctx.cgContext.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
         var rng = SeededRandom(seed: e.seed)
         let stroke = Palette.resolveStroke(e.strokeColor, isDark: isDark)
 
         switch e.kind {
         case .text:
             // Text can't be trimmed meaningfully, so it fades and settles.
-            ctx.cgContext.setAlpha(e.opacity * reveal)
+            ctx.setAlpha(e.opacity * reveal)
             var scaled = e
             scaled.y += (1 - reveal) * 6
             drawText(scaled, isDark: isDark)
@@ -132,7 +115,7 @@ enum ElementPainter {
         case .freedraw:
             // Ink is a filled outline; reveal by drawing only the leading part
             // of the stroke, which reads exactly like a pen moving.
-            ctx.cgContext.setAlpha(e.opacity)
+            ctx.setAlpha(e.opacity)
             var partial = e
             let keep = max(2, Int(CGFloat(e.points.count) * reveal))
             partial.points = Array(e.points.prefix(keep))
@@ -143,12 +126,12 @@ enum ElementPainter {
             let fillReveal = max(0, (reveal - 0.35) / 0.65)
             if fillReveal > 0.01, e.fillStyle != .none,
                e.kind == .rectangle || e.kind == .diamond || e.kind == .ellipse {
-                ctx.cgContext.setAlpha(e.opacity * fillReveal)
+                ctx.setAlpha(e.opacity * fillReveal)
                 var fillOnly = e
                 fillOnly.strokeColor = "transparent"
                 drawFillOnly(fillOnly, isDark: isDark, rng: &rng)
             }
-            ctx.cgContext.setAlpha(e.opacity)
+            ctx.setAlpha(e.opacity)
             var outlineRNG = SeededRandom(seed: e.seed)
             let path = outlinePath(e, rng: &outlineRNG)
             applyStrokeStyle(path, e)
@@ -158,7 +141,7 @@ enum ElementPainter {
     }
 
     /// The sketched outline for any element, without fill.
-    private static func outlinePath(_ e: DrawElement, rng: inout SeededRandom) -> NSBezierPath {
+    private static func outlinePath(_ e: DrawElement, rng: inout SeededRandom) -> BezierPath {
         switch e.kind {
         case .ellipse:
             return RoughRenderer.ellipse(in: e.frame, roughness: e.roughness, rng: &rng)
@@ -179,7 +162,7 @@ enum ElementPainter {
         case .line, .arrow:
             let origin = CGPoint(x: e.x, y: e.y)
             let pts = e.points.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }
-            let path = NSBezierPath()
+            let path = BezierPath()
             guard pts.count >= 2 else { return path }
             for i in 0..<(pts.count - 1) {
                 path.append(RoughRenderer.doubleLine(pts[i], pts[i + 1],
@@ -193,14 +176,14 @@ enum ElementPainter {
             }
             return path
         case .freedraw, .text:
-            return NSBezierPath()
+            return BezierPath()
         }
     }
 
     private static func drawFillOnly(_ e: DrawElement, isDark: Bool, rng: inout SeededRandom) {
         guard let fill = Palette.resolveFill(e.fillColor, isDark: isDark,
                                              isLineWork: e.fillStyle != .solid) else { return }
-        NSGraphicsContext.current?.saveGraphicsState()
+        Graphics.save()
         smoothShapePath(e).addClip()
         switch e.fillStyle {
         case .solid:
@@ -222,15 +205,15 @@ enum ElementPainter {
         case .none:
             break
         }
-        NSGraphicsContext.current?.restoreGraphicsState()
+        Graphics.restore()
     }
 
     static func draw(_ e: DrawElement, isDark: Bool) {
-        guard let ctx = NSGraphicsContext.current else { return }
-        ctx.saveGraphicsState()
-        ctx.cgContext.setAlpha(e.opacity)
-        ctx.cgContext.setLineCap(.round)
-        ctx.cgContext.setLineJoin(.round)
+        guard let ctx = Graphics.current else { return }
+        ctx.saveGState()
+        ctx.setAlpha(e.opacity)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
 
         var rng = SeededRandom(seed: e.seed)
         let stroke = Palette.resolveStroke(e.strokeColor, isDark: isDark)
@@ -246,12 +229,12 @@ enum ElementPainter {
             drawText(e, isDark: isDark)
         }
 
-        ctx.restoreGraphicsState()
+        ctx.restoreGState()
     }
 
     // MARK: - Closed shapes
 
-    private static func drawClosedShape(_ e: DrawElement, stroke: NSColor,
+    private static func drawClosedShape(_ e: DrawElement, stroke: PlatformColor,
                                         isDark: Bool, rng: inout SeededRandom) {
         let rect = e.frame
         guard rect.width > 0.5 || rect.height > 0.5 else { return }
@@ -260,7 +243,7 @@ enum ElementPainter {
         if e.fillStyle != .none,
            let fill = Palette.resolveFill(e.fillColor, isDark: isDark,
                                           isLineWork: e.fillStyle != .solid) {
-            NSGraphicsContext.current?.saveGraphicsState()
+            Graphics.save()
             let clip = smoothShapePath(e)
             clip.addClip()
 
@@ -286,11 +269,11 @@ enum ElementPainter {
             case .none:
                 break
             }
-            NSGraphicsContext.current?.restoreGraphicsState()
+            Graphics.restore()
         }
 
         // Then the sketchy outline on top.
-        let path: NSBezierPath
+        let path: BezierPath
         switch e.kind {
         case .ellipse:
             path = RoughRenderer.ellipse(in: rect, roughness: e.roughness, rng: &rng)
@@ -324,15 +307,15 @@ enum ElementPainter {
     }
 
     /// Clean silhouette used for clipping fills and for hit-testing.
-    static func smoothShapePath(_ e: DrawElement) -> NSBezierPath {
+    static func smoothShapePath(_ e: DrawElement) -> BezierPath {
         let rect = e.frame
         switch e.kind {
         case .ellipse:
-            return NSBezierPath(ovalIn: rect)
+            return BezierPath(ovalIn: rect)
         case .diamond:
             let pts = diamondPoints(rect)
             guard e.edges == .round else {
-                let p = NSBezierPath()
+                let p = BezierPath()
                 p.move(to: pts[0])
                 for q in pts.dropFirst() { p.line(to: q) }
                 p.close()
@@ -342,14 +325,14 @@ enum ElementPainter {
             return roundedPolygonPath(pts, radius: cornerRadius(rect, factor: 0.18))
         default:
             let r = e.edges == .round ? cornerRadius(rect, factor: 0.25) : 0
-            return NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r)
+            return BezierPath(roundedRect: rect, xRadius: r, yRadius: r)
         }
     }
 
     /// Clean rounded polygon — the silhouette its sketched twin approximates.
-    static func roundedPolygonPath(_ pts: [CGPoint], radius: CGFloat) -> NSBezierPath {
+    static func roundedPolygonPath(_ pts: [CGPoint], radius: CGFloat) -> BezierPath {
         let n = pts.count
-        let path = NSBezierPath()
+        let path = BezierPath()
         guard n > 2, radius > 1 else {
             guard let first = pts.first else { return path }
             path.move(to: first)
@@ -375,7 +358,7 @@ enum ElementPainter {
     /// Polygon whose corners are eased with quadratic curves and whose edges are
     /// sketched — the rounded-rectangle look.
     static func roughRoundedPolygon(_ pts: [CGPoint], radius: CGFloat,
-                                    roughness: CGFloat, rng: inout SeededRandom) -> NSBezierPath {
+                                    roughness: CGFloat, rng: inout SeededRandom) -> BezierPath {
         let n = pts.count
         guard n > 2, radius > 1 else {
             return RoughRenderer.polygon(pts, roughness: roughness, rng: &rng)
@@ -389,7 +372,7 @@ enum ElementPainter {
             exit[i] = pointToward(from: cur, to: next, distance: radius)
         }
 
-        let path = NSBezierPath()
+        let path = BezierPath()
         for i in 0..<n {
             // Straight run to the next corner…
             path.append(RoughRenderer.doubleLine(exit[i], entry[(i + 1) % n],
@@ -413,13 +396,13 @@ enum ElementPainter {
 
     // MARK: - Lines and arrows
 
-    private static func drawPathElement(_ e: DrawElement, stroke: NSColor,
+    private static func drawPathElement(_ e: DrawElement, stroke: PlatformColor,
                                         rng: inout SeededRandom) {
         let origin = CGPoint(x: e.x, y: e.y)
         let pts = e.points.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }
         guard pts.count >= 2 else { return }
 
-        let path = NSBezierPath()
+        let path = BezierPath()
         if pts.count == 2 {
             path.append(RoughRenderer.doubleLine(pts[0], pts[1],
                                                  roughness: e.roughness, rng: &rng))
@@ -446,7 +429,7 @@ enum ElementPainter {
 
     // MARK: - Freehand
 
-    private static func drawFreehand(_ e: DrawElement, stroke: NSColor) {
+    private static func drawFreehand(_ e: DrawElement, stroke: PlatformColor) {
         let origin = CGPoint(x: e.x, y: e.y)
         let pts = e.points.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }
         guard !pts.isEmpty else { return }
@@ -467,7 +450,7 @@ enum ElementPainter {
 
     // MARK: - Shared
 
-    private static func applyStrokeStyle(_ path: NSBezierPath, _ e: DrawElement) {
+    private static func applyStrokeStyle(_ path: BezierPath, _ e: DrawElement) {
         path.lineWidth = e.strokeWidth
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
@@ -489,7 +472,7 @@ enum ElementPainter {
     /// the inline thumbnails in notes and for PNG export.
     static func image(for drawing: Drawing, maxSize: CGSize, isDark: Bool,
                       scale: CGFloat = 2, padding: CGFloat = 16,
-                      background: NSColor? = nil) -> NSImage? {
+                      background: PlatformColor? = nil) -> PlatformImage? {
         guard let bounds = drawing.contentBounds, bounds.width > 0, bounds.height > 0 else {
             return nil
         }
@@ -505,26 +488,22 @@ enum ElementPainter {
                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
 
-        // `flipped: true` keeps AppKit text upright once we invert the CTM below.
-        let ctx = NSGraphicsContext(cgContext: cg, flipped: true)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = ctx
+        // `flipped: true` keeps text upright once we invert the CTM below.
+        Graphics.withContext(cg, flipped: true) {
+            cg.scaleBy(x: scale, y: scale)
+            if let bg = background {
+                cg.setFillColor(bg.cgColor)
+                cg.fill(CGRect(origin: .zero, size: size))
+            }
+            cg.translateBy(x: 0, y: size.height)
+            cg.scaleBy(x: 1, y: -1)                 // now y-down, matching scene space
+            cg.scaleBy(x: fit, y: fit)
+            cg.translateBy(x: -padded.minX, y: -padded.minY)
 
-        cg.scaleBy(x: scale, y: scale)
-        if let bg = background {
-            cg.setFillColor(bg.cgColor)
-            cg.fill(CGRect(origin: .zero, size: size))
+            for e in drawing.elements { draw(e, isDark: isDark) }
         }
-        cg.translateBy(x: 0, y: size.height)
-        cg.scaleBy(x: 1, y: -1)                     // now y-down, matching scene space
-        cg.scaleBy(x: fit, y: fit)
-        cg.translateBy(x: -padded.minX, y: -padded.minY)
-
-        for e in drawing.elements { draw(e, isDark: isDark) }
-
-        NSGraphicsContext.restoreGraphicsState()
 
         guard let cgImage = cg.makeImage() else { return nil }
-        return NSImage(cgImage: cgImage, size: size)
+        return PlatformImage.from(cgImage: cgImage, size: size)
     }
 }

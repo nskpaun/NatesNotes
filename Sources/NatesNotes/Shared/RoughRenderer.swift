@@ -1,4 +1,9 @@
+import Foundation
+#if canImport(AppKit)
 import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// Deterministic pseudo-random source. Every element carries a seed, so a shape
 /// redraws with exactly the same wobble on every frame — the sketch look has to
@@ -35,8 +40,8 @@ enum RoughRenderer {
     static func line(_ a: CGPoint, _ b: CGPoint,
                      roughness: CGFloat,
                      rng: inout SeededRandom,
-                     wideStart: Bool) -> NSBezierPath {
-        let path = NSBezierPath()
+                     wideStart: Bool) -> BezierPath {
+        let path = BezierPath()
         let dx = b.x - a.x, dy = b.y - a.y
         let lengthSq = dx * dx + dy * dy
         let length = sqrt(lengthSq)
@@ -78,7 +83,7 @@ enum RoughRenderer {
     /// Two overlapping passes — the doubled stroke is the signature of the style.
     static func doubleLine(_ a: CGPoint, _ b: CGPoint,
                            roughness: CGFloat,
-                           rng: inout SeededRandom) -> NSBezierPath {
+                           rng: inout SeededRandom) -> BezierPath {
         let p = line(a, b, roughness: roughness, rng: &rng, wideStart: true)
         p.append(line(a, b, roughness: roughness, rng: &rng, wideStart: false))
         return p
@@ -86,8 +91,8 @@ enum RoughRenderer {
 
     /// Polygon with optionally rounded corners, each edge sketched twice.
     static func polygon(_ pts: [CGPoint], roughness: CGFloat,
-                        rng: inout SeededRandom) -> NSBezierPath {
-        let path = NSBezierPath()
+                        rng: inout SeededRandom) -> BezierPath {
+        let path = BezierPath()
         guard pts.count > 1 else { return path }
         for i in 0..<pts.count {
             let a = pts[i], b = pts[(i + 1) % pts.count]
@@ -98,7 +103,7 @@ enum RoughRenderer {
 
     /// Perturbed ellipse traced twice, each pass smoothed through its points.
     static func ellipse(in rect: CGRect, roughness: CGFloat,
-                        rng: inout SeededRandom) -> NSBezierPath {
+                        rng: inout SeededRandom) -> BezierPath {
         let rx = max(rect.width / 2, 0.5)
         let ry = max(rect.height / 2, 0.5)
         let center = CGPoint(x: rect.midX, y: rect.midY)
@@ -108,7 +113,7 @@ enum RoughRenderer {
         let steps = max(9, min(40, Int(perimeter / 12)))
         let increment = CGFloat.pi * 2 / CGFloat(steps)
 
-        let path = NSBezierPath()
+        let path = BezierPath()
         for pass in 0..<2 {
             let jitterScale: CGFloat = pass == 0 ? 1 : 0.6
             let rxp = rx + rng.offset(rx * 0.05, roughness: roughness)
@@ -131,8 +136,8 @@ enum RoughRenderer {
     }
 
     /// Catmull-Rom through the points, converted to cubic Béziers.
-    static func smoothCurve(through pts: [CGPoint], tension: CGFloat = 1) -> NSBezierPath {
-        let path = NSBezierPath()
+    static func smoothCurve(through pts: [CGPoint], tension: CGFloat = 1) -> BezierPath {
+        let path = BezierPath()
         guard pts.count > 2 else {
             if let f = pts.first { path.move(to: f) }
             for p in pts.dropFirst() { path.line(to: p) }
@@ -158,8 +163,8 @@ enum RoughRenderer {
     /// Variable-width outline around a stroke, tapered at both ends. Produces a
     /// filled polygon rather than a stroked path, which is what makes freehand
     /// marks look like ink instead of wire.
-    static func inkOutline(points: [CGPoint], width: CGFloat) -> NSBezierPath {
-        let path = NSBezierPath()
+    static func inkOutline(points: [CGPoint], width: CGFloat) -> BezierPath {
+        let path = BezierPath()
         guard points.count > 1 else {
             if let p = points.first {
                 path.appendOval(in: CGRect(x: p.x - width / 2, y: p.y - width / 2,
@@ -235,8 +240,8 @@ enum RoughRenderer {
 
     /// Parallel sketch lines across `bounds`; the caller clips to the shape.
     static func hachure(bounds: CGRect, gap: CGFloat, angle: CGFloat,
-                        roughness: CGFloat, rng: inout SeededRandom) -> NSBezierPath {
-        let path = NSBezierPath()
+                        roughness: CGFloat, rng: inout SeededRandom) -> BezierPath {
+        let path = BezierPath()
         guard bounds.width > 0.5, bounds.height > 0.5 else { return path }
 
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -259,10 +264,10 @@ enum RoughRenderer {
 
     /// Two sketched barbs at `tip`, aimed back along the incoming direction.
     static func arrowhead(tip: CGPoint, from: CGPoint, size: CGFloat,
-                          roughness: CGFloat, rng: inout SeededRandom) -> NSBezierPath {
+                          roughness: CGFloat, rng: inout SeededRandom) -> BezierPath {
         let angle = atan2(tip.y - from.y, tip.x - from.x)
         let spread = CGFloat.pi / 7
-        let path = NSBezierPath()
+        let path = BezierPath()
         for sign in [CGFloat(1), CGFloat(-1)] {
             let a = angle + CGFloat.pi + sign * spread
             let end = CGPoint(x: tip.x + cos(a) * size, y: tip.y + sin(a) * size)
