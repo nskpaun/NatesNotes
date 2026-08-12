@@ -101,8 +101,8 @@ public struct SyncSettings: Sendable, Equatable {
     /// Where the address is stored on this machine.
     public static let baseURLDefaultsKey = "nn.syncBaseURL"
 
-    /// Environment first (a one-off run), then the stored setting, then the
-    /// placeholder above.
+    /// Environment first (a one-off run), then whatever the settings UI stored,
+    /// then the compiled-in deployment above.
     public static func standard() -> SyncSettings {
         if let override = ProcessInfo.processInfo.environment["SYNC_BASE_URL"],
            let url = URL(string: override) {
