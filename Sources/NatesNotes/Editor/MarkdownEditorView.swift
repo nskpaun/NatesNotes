@@ -50,7 +50,8 @@ struct MarkdownEditor: NSViewRepresentable {
             context.coordinator.currentNoteID = noteID
             context.coordinator.applyExternalText(text, scrollToTop: true)
             textView.invalidateImageCache()
-        } else if textView.string != text && !context.coordinator.isTyping {
+        } else if textView.string != text && !context.coordinator.isTyping
+                    && !textView.hasMarkedText() {
             context.coordinator.applyExternalText(text, scrollToTop: false)
         }
 
@@ -71,10 +72,15 @@ struct MarkdownEditor: NSViewRepresentable {
             self.parent = parent
         }
 
+        /// Puts outside content into the view. Opening a different note starts
+        /// at the top; the same note being refreshed underneath (a sync pull)
+        /// keeps the caret and viewport where the user left them.
         func applyExternalText(_ text: String, scrollToTop: Bool) {
             guard let textView else { return }
+            let caret = TextSync.remappedCaret(textView.selectedRange(),
+                                               from: textView.string, to: text)
             textView.string = text
-            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            textView.setSelectedRange(scrollToTop ? NSRange(location: 0, length: 0) : caret)
             textView.restyle()
             if scrollToTop {
                 textView.enclosingScrollView?.documentView?.scroll(.zero)

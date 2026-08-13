@@ -416,10 +416,19 @@ public actor SyncEngine {
     }
 
     /// Marks a record as reconciled, so the next merge has the right base.
-    public func recordMergeBase(nodeId: String, content: Data) throws {
+    ///
+    /// `ifVersionIs` protects reconciliations that happen late — the app may sit
+    /// on a pulled document while the user finishes typing, and by the time it
+    /// merges, this device can have pushed newer content whose apply already
+    /// advanced the base. Overwriting that base with the older document's
+    /// content would make the next pull read this device's own write as a
+    /// stranger's edit. Passing the document's version makes a stale
+    /// reconciliation a no-op instead.
+    public func recordMergeBase(nodeId: String, content: Data, ifVersionIs expected: Int? = nil) throws {
         let ref = try blobs.storeLocal(content)
         try store.mutate { state in
             guard var entry = state.mirror[nodeId] else { return }
+            if let expected, entry.version != expected { return }
             entry.mergeBaseBlobId = ref.id
             state.mirror[nodeId] = entry
         }

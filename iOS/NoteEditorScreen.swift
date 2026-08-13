@@ -43,9 +43,14 @@ struct MarkdownEditor: UIViewRepresentable {
     func updateUIView(_ view: MarkdownEditorTextView, context: Context) {
         context.coordinator.notes = notes
         context.coordinator.noteID = noteID
-        // Only adopt outside changes (a sync pull); never fight the keyboard.
+        // Adopt outside changes (a sync pull) even while the keyboard is up —
+        // skipping them here used to let the next keystroke push the editor's
+        // stale buffer back over the merged note, silently discarding the other
+        // device's edit. The sync layer already waits out active typing, and
+        // `setMarkdown` keeps the caret with its content; only in-progress IME
+        // composition is never interrupted.
         if let text = notes.notes.first(where: { $0.id == noteID })?.text,
-           text != view.markdown, !view.isFirstResponder {
+           text != view.markdown, view.markedTextRange == nil {
             view.setMarkdown(text)
         }
     }

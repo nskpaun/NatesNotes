@@ -59,11 +59,13 @@ final class MarkdownEditorTextView: UITextView {
     // MARK: - Content
 
     /// Replaces the buffer without letting the change echo back as a user edit.
+    /// The caret follows the content it sat next to, so a sync pull landing in
+    /// an open editor doesn't teleport it.
     func setMarkdown(_ text: String) {
         guard textStorage.string != text else { return }
-        let selection = selectedRange
+        let caret = TextSync.remappedCaret(selectedRange, from: textStorage.string, to: text)
         textStorage.setAttributedString(NSAttributedString(string: text))
-        selectedRange = NSRange(location: min(selection.location, text.utf16.count), length: 0)
+        selectedRange = caret
         imageCache.removeAll()
         restyle()
     }

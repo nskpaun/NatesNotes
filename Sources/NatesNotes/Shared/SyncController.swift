@@ -1,6 +1,11 @@
 import Foundation
 import SwiftUI
 import SyncKit
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// Bridges `NoteStore` to `SyncEngine`: turns local edits into durable outbox
 /// intent, and folds remote documents back into local storage through the
@@ -38,6 +43,20 @@ final class SyncController: ObservableObject {
     private var autoSyncWork: DispatchWorkItem?
     /// Suppresses the echo when we write remote content into the local store.
     private var isApplyingRemote = false
+
+    /// When each note last changed under the user's hands. Remote content is
+    /// never folded into a note that's actively being edited — it waits in the
+    /// deferral buffers until the note has been quiet for `editQuiescence`.
+    private var lastLocalEditAt: [UUID: Date] = [:]
+    private var deferredDocs: [String: (noteID: UUID, document: RemoteDocument)] = [:]
+    private var deferredTombstones: [String: (noteID: UUID, tombstone: RemoteTombstone)] = [:]
+    private var deferredFlushWork: DispatchWorkItem?
+    private var lifecycleObservers: [NSObjectProtocol] = []
+
+    /// How long a note must sit untouched before remote edits may land in it.
+    /// A shade above the push debounce, so the pass an edit itself triggers
+    /// finds the note already quiet and applies immediately.
+    static let editQuiescence: TimeInterval = 4.0
 
     var isAvailable: Bool { backend != nil }
 
@@ -105,6 +124,7 @@ final class SyncController: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.syncNow(reason: "timer") }
         }
+        installLifecycleObservers()
         Task { await syncNow(reason: "launch") }
     }
 
@@ -112,6 +132,37 @@ final class SyncController: ObservableObject {
         timer?.invalidate()
         timer = nil
         autoSyncWork?.cancel()
+        deferredFlushWork?.cancel()
+        deferredFlushWork = nil
+        for observer in lifecycleObservers { NotificationCenter.default.removeObserver(observer) }
+        lifecycleObservers.removeAll()
+    }
+
+    /// Syncing on activation and deactivation is what makes two devices feel
+    /// like one: pick up the other device's edits the moment you come back,
+    /// hand yours over the moment you leave. Both are also the natural ends of
+    /// an editing session, so deferred remote content reconciles here too.
+    private func installLifecycleObservers() {
+        guard lifecycleObservers.isEmpty else { return }
+        #if canImport(AppKit)
+        let becameActive = NSApplication.didBecomeActiveNotification
+        let willResign = NSApplication.willResignActiveNotification
+        #else
+        let becameActive = UIApplication.didBecomeActiveNotification
+        let willResign = UIApplication.willResignActiveNotification
+        #endif
+        lifecycleObservers.append(NotificationCenter.default.addObserver(
+            forName: becameActive, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in await self?.syncNow(reason: "activate") }
+            })
+        lifecycleObservers.append(NotificationCenter.default.addObserver(
+            forName: willResign, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    await self.applyDeferred(force: true)
+                    await self.syncNow(reason: "resign")
+                }
+            })
     }
 
     /// Syncs shortly after typing stops.
@@ -173,6 +224,11 @@ final class SyncController: ObservableObject {
             return
         }
         status = .syncing
+        // Reconcile anything whose editing pause has passed first, so the
+        // merged result rides this very pass instead of the next one. (After
+        // the status flip: an await before it would let a second pass through
+        // the guard.)
+        await applyDeferred(force: false)
         do {
             let outcome = try await backend.engine.sync()
             await applyRemote(outcome)
@@ -195,30 +251,129 @@ final class SyncController: ObservableObject {
         }
     }
 
-    /// Folds verified remote content into local storage.
+    /// Folds verified remote content into local storage — except into notes the
+    /// user is typing in right now. Those documents wait in a deferral buffer
+    /// and land once the note goes quiet, so text never changes under the caret
+    /// and a half-typed sentence never feeds the merge.
+    private func applyRemote(_ outcome: SyncOutcome) async {
+        var documents: [RemoteDocument] = []
+        var tombstones: [RemoteTombstone] = []
+
+        for document in outcome.updated {
+            if let noteID = Self.noteID(for: document), isActivelyEdited(noteID) {
+                deferredTombstones.removeValue(forKey: document.nodeId)
+                deferredDocs[document.nodeId] = (noteID, document)
+            } else {
+                documents.append(document)
+            }
+        }
+        for tombstone in outcome.removed {
+            if tombstone.folder == SyncEngine.notesFolder,
+               let id = UUID(uuidString: (tombstone.name as NSString).deletingPathExtension),
+               isActivelyEdited(id) {
+                deferredDocs.removeValue(forKey: tombstone.nodeId)
+                deferredTombstones[tombstone.nodeId] = (id, tombstone)
+            } else {
+                tombstones.append(tombstone)
+            }
+        }
+
+        await applyDocuments(documents, tombstones, allowInsert: true)
+        if !deferredDocs.isEmpty || !deferredTombstones.isEmpty {
+            scheduleDeferredFlush()
+        }
+    }
+
+    private func isActivelyEdited(_ id: UUID) -> Bool {
+        guard let last = lastLocalEditAt[id] else { return false }
+        return Date().timeIntervalSince(last) < Self.editQuiescence
+    }
+
+    /// The note a document belongs to — its own id for notes, the owning note
+    /// for drawings.
+    private static func noteID(for document: RemoteDocument) -> UUID? {
+        switch document.folder {
+        case SyncEngine.notesFolder:
+            return NoteDocument(data: document.content)?.id
+        case SyncEngine.drawingsFolder:
+            return DrawingDocument(data: document.content)?.noteId
+        default:
+            return nil
+        }
+    }
+
+    /// Applies deferred remote content whose notes have gone quiet — all of it
+    /// when `force` is set (leaving the app, or quitting).
+    func applyDeferred(force: Bool) async {
+        guard !deferredDocs.isEmpty || !deferredTombstones.isEmpty else { return }
+
+        var documents: [RemoteDocument] = []
+        for (nodeId, entry) in deferredDocs where force || !isActivelyEdited(entry.noteID) {
+            documents.append(entry.document)
+            deferredDocs.removeValue(forKey: nodeId)
+        }
+        var tombstones: [RemoteTombstone] = []
+        for (nodeId, entry) in deferredTombstones where force || !isActivelyEdited(entry.noteID) {
+            tombstones.append(entry.tombstone)
+            deferredTombstones.removeValue(forKey: nodeId)
+        }
+
+        if !documents.isEmpty || !tombstones.isEmpty {
+            // `allowInsert: false`: a note deleted locally while its update
+            // waited stays deleted rather than being resurrected.
+            await applyDocuments(documents, tombstones, allowInsert: false)
+            refreshPublished()
+            if pendingCount > 0 { scheduleAutoSync(after: 1) }
+        }
+        if !deferredDocs.isEmpty || !deferredTombstones.isEmpty {
+            scheduleDeferredFlush()
+        }
+    }
+
+    private func scheduleDeferredFlush(after delay: TimeInterval = 1.5) {
+        guard deferredFlushWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.deferredFlushWork = nil
+                await self.applyDeferred(force: false)
+            }
+        }
+        deferredFlushWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// The application pass itself.
     ///
     /// Every merge base this establishes is committed before the pass returns.
     /// The next pull reads those bases to tell "they changed it" apart from "I
     /// changed it"; one that lands late leaves the following pull comparing
     /// against pre-push content, so this device reads its own last write as a
-    /// stranger's edit — a conflict with nobody but itself.
-    private func applyRemote(_ outcome: SyncOutcome) async {
+    /// stranger's edit — a conflict with nobody but itself. Deferred documents
+    /// carry the same risk in the other direction, which is why reconciliation
+    /// passes each document's version to `recordMergeBase`.
+    private func applyDocuments(_ documents: [RemoteDocument],
+                                _ tombstones: [RemoteTombstone],
+                                allowInsert: Bool) async {
         guard let notes else { return }
-        var reconciled: [(nodeId: String, content: Data)] = []
+        var reconciled: [(nodeId: String, content: Data, version: Int)] = []
+        var reconciledRecords: Set<String> = []
         isApplyingRemote = true
 
-        for document in outcome.updated {
+        for document in documents {
             switch document.folder {
             case SyncEngine.notesFolder:
-                applyRemoteNote(document, into: notes, reconciled: &reconciled)
+                applyRemoteNote(document, into: notes, allowInsert: allowInsert,
+                                reconciled: &reconciled, records: &reconciledRecords)
             case SyncEngine.drawingsFolder:
-                applyRemoteDrawing(document, into: notes, reconciled: &reconciled)
+                applyRemoteDrawing(document, into: notes,
+                                   reconciled: &reconciled, records: &reconciledRecords)
             default:
                 break
             }
         }
 
-        for tombstone in outcome.removed where tombstone.folder == SyncEngine.notesFolder {
+        for tombstone in tombstones where tombstone.folder == SyncEngine.notesFolder {
             let id = UUID(uuidString: (tombstone.name as NSString).deletingPathExtension)
             if let id, notes.notes.contains(where: { $0.id == id }) {
                 notes.delete(id, propagate: false)
@@ -227,38 +382,66 @@ final class SyncController: ObservableObject {
 
         isApplyingRemote = false
 
-        if let backend {
-            for entry in reconciled {
-                try? await backend.engine.recordMergeBase(nodeId: entry.nodeId,
-                                                          content: entry.content)
-            }
+        guard let backend else { return }
+        for entry in reconciled {
+            try? await backend.engine.recordMergeBase(nodeId: entry.nodeId,
+                                                      content: entry.content,
+                                                      ifVersionIs: entry.version)
+        }
+
+        // A record the merge just reconciled has nothing left to ask the user.
+        // Whatever its blocked push wanted to say has been folded in,
+        // re-enqueued as fresh intent, or preserved as a conflict copy — so the
+        // push-time conflict record would only double-surface the same event.
+        let superseded = backend.store.state.conflicts.filter {
+            !$0.resolved && reconciledRecords.contains($0.recordKey)
+        }
+        for conflict in superseded {
+            try? await backend.engine.resolveConflict(conflict.id, mergedContent: nil)
+        }
+        if !superseded.isEmpty {
+            try? await backend.engine.clearResolvedConflicts()
         }
     }
 
     private func applyRemoteNote(_ document: RemoteDocument, into notes: NoteStore,
-                                 reconciled: inout [(nodeId: String, content: Data)]) {
+                                 allowInsert: Bool,
+                                 reconciled: inout [(nodeId: String, content: Data, version: Int)],
+                                 records: inout Set<String>) {
         guard let remote = NoteDocument(data: document.content) else { return }
         let base = document.base.flatMap { NoteDocument(data: $0) }
 
         guard let index = notes.index(of: remote.id) else {
-            // New to this device.
+            // New to this device — unless it was deleted here while the
+            // document waited out an editing pause; a deferred update must not
+            // resurrect it.
+            guard allowInsert else { return }
             var note = Note(id: remote.id)
             remote.apply(to: &note)
             notes.insert(note, propagate: false)
-            reconciled.append((document.nodeId, document.content))
+            reconciled.append((document.nodeId, document.content, document.version))
+            records.insert(NoteDocument.recordKey(for: remote.id))
             return
         }
 
+        records.insert(NoteDocument.recordKey(for: remote.id))
         let local = NoteDocument(note: notes.notes[index])
         switch NoteMerge.merge(base: base, local: local, remote: remote) {
         case .keepLocal:
-            reconciled.append((document.nodeId, document.content))
+            reconciled.append((document.nodeId, document.content, document.version))
 
         case .useRemote(let merged):
             var note = notes.notes[index]
             merged.apply(to: &note)
             notes.replace(note, propagate: false)
-            reconciled.append((document.nodeId, document.content))
+            // The body is the server's, but a field the local side moved — a
+            // pin, an icon — survives the merge. Send it back, or the server
+            // never learns of it.
+            if merged.pinned != remote.pinned || merged.emoji != remote.emoji
+                || merged.drawingIds != remote.drawingIds {
+                enqueueNote(note)
+            }
+            reconciled.append((document.nodeId, document.content, document.version))
 
         case .merged(let merged):
             var note = notes.notes[index]
@@ -266,7 +449,7 @@ final class SyncController: ObservableObject {
             notes.replace(note, propagate: false)
             // A merged result is new content, so it goes back as fresh intent.
             enqueueNote(note)
-            reconciled.append((document.nodeId, document.content))
+            reconciled.append((document.nodeId, document.content, document.version))
 
         case .conflict(_, let remoteDoc):
             // Local stays live; the server's version is preserved as its own
@@ -286,20 +469,22 @@ final class SyncController: ObservableObject {
             } else {
                 notes.insert(copy, propagate: true)
             }
-            reconciled.append((document.nodeId, document.content))
+            reconciled.append((document.nodeId, document.content, document.version))
             enqueueNote(notes.notes[index])
         }
     }
 
     private func applyRemoteDrawing(_ document: RemoteDocument, into notes: NoteStore,
-                                    reconciled: inout [(nodeId: String, content: Data)]) {
+                                    reconciled: inout [(nodeId: String, content: Data, version: Int)],
+                                    records: inout Set<String>) {
         guard let remote = DrawingDocument(data: document.content) else { return }
         guard let noteIndex = notes.index(of: remote.noteId) else { return }
         let existing = notes.notes[noteIndex].drawings[remote.id]
         if existing?.elements != remote.elements {
             notes.setDrawing(remote.drawing, for: remote.noteId, propagate: false)
         }
-        reconciled.append((document.nodeId, document.content))
+        reconciled.append((document.nodeId, document.content, document.version))
+        records.insert(DrawingDocument.recordKey(for: remote.id))
     }
 
     // MARK: - Conflicts
@@ -431,6 +616,7 @@ extension SyncController: NoteStoreSyncDelegate {
     nonisolated func noteStore(_ store: NoteStore, didChange note: Note) {
         Task { @MainActor in
             guard !isApplyingRemote else { return }
+            lastLocalEditAt[note.id] = Date()
             enqueueNote(note)
         }
     }
@@ -438,6 +624,7 @@ extension SyncController: NoteStoreSyncDelegate {
     nonisolated func noteStore(_ store: NoteStore, didDelete noteID: UUID,
                                drawingIDs: [UUID]) {
         Task { @MainActor in
+            lastLocalEditAt.removeValue(forKey: noteID)
             guard !isApplyingRemote, let backend else { return }
             try? await backend.engine.enqueueDelete(
                 recordKey: NoteDocument.recordKey(for: noteID),
@@ -458,6 +645,7 @@ extension SyncController: NoteStoreSyncDelegate {
                                in noteID: UUID) {
         Task { @MainActor in
             guard !isApplyingRemote else { return }
+            lastLocalEditAt[noteID] = Date()
             let document = DrawingDocument(drawing: drawing, noteId: noteID)
             try? engineEnqueueUpsert(
                 recordKey: DrawingDocument.recordKey(for: drawing.id),

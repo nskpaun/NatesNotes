@@ -210,9 +210,168 @@ enum NoteMerge {
                 result.body = local.body
                 return .merged(result)
             }
-            // Same field, two different edits — never silently pick one.
+            // Both bodies moved. Different lines are still independent changes
+            // — a note is edited top and bottom from two devices far more often
+            // than the same sentence is — so merge line-wise and only escalate
+            // when the same region truly diverged.
+            if let combined = mergeBodies(base: base.body, local: local.body,
+                                          remote: remote.body) {
+                result.body = combined
+                return .merged(result)
+            }
             return .conflict(local: local, remote: remote)
         }
+    }
+
+    // MARK: Line-level body merge
+
+    /// One side's rewrite of a stretch of base lines. An empty `range` is an
+    /// insertion before line `range.lowerBound`.
+    private struct Hunk {
+        var range: Range<Int>
+        var lines: [Substring]
+    }
+
+    private struct SideHunk {
+        var hunk: Hunk
+        var isLocal: Bool
+    }
+
+    /// diff3 over lines: both sides' edits apply where they touched different
+    /// regions of the note; `nil` only where the same lines truly diverged.
+    ///
+    /// Newline-preserving by construction — splitting keeps empty subsequences,
+    /// so text round-trips exactly when there is nothing to merge.
+    static func mergeBodies(base: String, local: String, remote: String) -> String? {
+        let baseLines = base.split(separator: "\n", omittingEmptySubsequences: false)
+        let localLines = local.split(separator: "\n", omittingEmptySubsequences: false)
+        let remoteLines = remote.split(separator: "\n", omittingEmptySubsequences: false)
+
+        // The LCS tables are quadratic; past this, a conflict copy is cheaper
+        // than the merge attempt.
+        guard baseLines.count * localLines.count <= 1_500_000,
+              baseLines.count * remoteLines.count <= 1_500_000 else { return nil }
+
+        let tagged = (hunks(base: baseLines, side: localLines).map { SideHunk(hunk: $0, isLocal: true) }
+            + hunks(base: baseLines, side: remoteLines).map { SideHunk(hunk: $0, isLocal: false) })
+            .sorted { a, b in
+                if a.hunk.range.lowerBound != b.hunk.range.lowerBound {
+                    return a.hunk.range.lowerBound < b.hunk.range.lowerBound
+                }
+                // An insertion sorts ahead of a rewrite starting at the same
+                // line: it references content before that line.
+                return a.hunk.range.count < b.hunk.range.count
+            }
+
+        // Group hunks whose base ranges genuinely interleave. Touching at a
+        // boundary is composition, not conflict — an insertion right before a
+        // rewritten block belongs to both sides at once only when it lands
+        // *inside* the block.
+        var merged: [Hunk] = []
+        var index = 0
+        while index < tagged.count {
+            var cluster = [tagged[index]]
+            var union = tagged[index].hunk.range
+            var next = index + 1
+            while next < tagged.count {
+                let candidate = tagged[next].hunk.range
+                let overlaps: Bool
+                if candidate.isEmpty {
+                    overlaps = union.isEmpty
+                        ? candidate.lowerBound == union.lowerBound
+                        : union.lowerBound < candidate.lowerBound
+                            && candidate.lowerBound < union.upperBound
+                } else {
+                    overlaps = candidate.lowerBound < union.upperBound
+                }
+                guard overlaps else { break }
+                cluster.append(tagged[next])
+                union = union.lowerBound..<max(union.upperBound, candidate.upperBound)
+                next += 1
+            }
+            index = next
+
+            let ours = cluster.filter(\.isLocal).map(\.hunk)
+            let theirs = cluster.filter { !$0.isLocal }.map(\.hunk)
+            if ours.isEmpty || theirs.isEmpty {
+                merged.append(contentsOf: cluster.map(\.hunk))
+            } else {
+                // Both sides rewrote this region. Identical rewrites — the
+                // same fix made twice — collapse to one; anything else is a
+                // real conflict.
+                let mine = render(base: baseLines, range: union, hunks: ours)
+                let other = render(base: baseLines, range: union, hunks: theirs)
+                guard mine == other else { return nil }
+                merged.append(Hunk(range: union, lines: mine))
+            }
+        }
+
+        var output: [Substring] = []
+        var cursor = 0
+        for hunk in merged {
+            output.append(contentsOf: baseLines[cursor..<hunk.range.lowerBound])
+            output.append(contentsOf: hunk.lines)
+            cursor = max(cursor, hunk.range.upperBound)
+        }
+        output.append(contentsOf: baseLines[cursor...])
+        return output.joined(separator: "\n")
+    }
+
+    /// Difference between `base` and `side` as replacement hunks, via a
+    /// longest-common-subsequence walk.
+    private static func hunks(base: [Substring], side: [Substring]) -> [Hunk] {
+        let n = base.count, m = side.count
+        var lcs = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        if n > 0 && m > 0 {
+            for i in stride(from: n - 1, through: 0, by: -1) {
+                for j in stride(from: m - 1, through: 0, by: -1) {
+                    lcs[i][j] = base[i] == side[j]
+                        ? lcs[i + 1][j + 1] + 1
+                        : max(lcs[i + 1][j], lcs[i][j + 1])
+                }
+            }
+        }
+
+        var result: [Hunk] = []
+        var pendingBase = 0, pendingSide = 0
+        func flush(upTo i: Int, _ j: Int) {
+            if pendingBase < i || pendingSide < j {
+                result.append(Hunk(range: pendingBase..<i, lines: Array(side[pendingSide..<j])))
+            }
+        }
+
+        var i = 0, j = 0
+        while i < n && j < m {
+            if base[i] == side[j] {
+                flush(upTo: i, j)
+                i += 1; j += 1
+                pendingBase = i; pendingSide = j
+            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        flush(upTo: n, m)
+        return result
+    }
+
+    /// What base lines `range` become after applying one side's hunks.
+    private static func render(base: [Substring], range: Range<Int>,
+                               hunks: [Hunk]) -> [Substring] {
+        var out: [Substring] = []
+        var cursor = range.lowerBound
+        for hunk in hunks {
+            if hunk.range.lowerBound > cursor {
+                out.append(contentsOf: base[cursor..<hunk.range.lowerBound])
+            }
+            out.append(contentsOf: hunk.lines)
+            cursor = max(cursor, hunk.range.upperBound)
+        }
+        if cursor < range.upperBound {
+            out.append(contentsOf: base[cursor..<range.upperBound])
+        }
+        return out
     }
 
     static let conflictBanner = "> Conflicting version from another device. "
@@ -248,4 +407,10 @@ enum NoteMerge {
     static func isUntouchedConflictCopy(_ note: Note) -> Bool {
         note.text.hasPrefix(conflictBanner)
     }
+}
+
+extension Note {
+    /// A conflict copy that still carries its banner. Deleting the banner is
+    /// how a note stops being one — that's the user saying "this is mine now".
+    var isConflictCopy: Bool { text.hasPrefix(NoteMerge.conflictBanner) }
 }

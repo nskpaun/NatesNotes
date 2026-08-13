@@ -263,3 +263,49 @@ extension PlatformImage {
         #endif
     }
 }
+
+// MARK: - External text application
+
+enum TextSync {
+    /// Where a caret belongs after the text under it is replaced from outside
+    /// (a sync pull landing in an open editor).
+    ///
+    /// The old and new text are compared by common prefix and suffix: a caret
+    /// before the changed region stays put, one after it shifts by the length
+    /// delta, and one inside the changed region snaps to the start of the
+    /// change. Offsets are UTF-16, matching NSRange; the result is snapped to
+    /// a composed-character boundary so it can never land inside an emoji.
+    static func remappedCaret(_ caret: NSRange, from oldText: String,
+                              to newText: String) -> NSRange {
+        let old = oldText as NSString
+        let new = newText as NSString
+
+        let shared = min(old.length, new.length)
+        var prefix = 0
+        while prefix < shared && old.character(at: prefix) == new.character(at: prefix) {
+            prefix += 1
+        }
+        var suffix = 0
+        while suffix < shared - prefix
+            && old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) {
+            suffix += 1
+        }
+
+        var location: Int
+        if caret.location + caret.length <= prefix {
+            // Entirely before the change: selection survives as-is.
+            return caret
+        } else if caret.location >= old.length - suffix {
+            location = caret.location + (new.length - old.length)
+        } else {
+            location = prefix
+        }
+
+        location = max(0, min(location, new.length))
+        if location > 0 && location < new.length {
+            let boundary = new.rangeOfComposedCharacterSequence(at: location)
+            if boundary.location < location { location = boundary.location }
+        }
+        return NSRange(location: location, length: 0)
+    }
+}

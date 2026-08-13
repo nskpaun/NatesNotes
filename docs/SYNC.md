@@ -144,19 +144,47 @@ Resolution runs three-way, against the last-synced content as the common base:
 - Server unchanged from base → keep local.
 - Different fields changed on each side (e.g. `pinned` here, `body` there) →
   field-wise merge, no user involvement.
-- **Same field changed differently** → the local version stays in place, and the
-  server's version is preserved as a **conflict copy**: a new note titled
-  `<title> (conflict from <device>)` with its own fresh ID, which syncs back as
-  an ordinary note so every device ends up holding both.
+- Both bodies changed → **line-level three-way merge** (diff3 over lines).
+  Editing the intro on the phone and the todo list on the Mac is two
+  independent changes, not a conflict; both land. Only edits to the *same
+  lines* — including two different insertions at the same spot — escalate.
+- **Same lines changed differently** → the local version stays in place, and
+  the server's version is preserved as a **conflict copy**: a banner-prefixed
+  note whose ID is derived from the source record, so repeated detection
+  refreshes the one copy instead of minting more. It syncs back as an ordinary
+  note, so every device ends up holding both versions.
 
-The UI surfaces this rather than hiding it: the sidebar badges the affected
-note, and the note detail shows a bar — *"Also edited on <device>"* — with
-**Open the other version**, **Keep mine**, and **Keep theirs**. Dismissing it
-resolves nothing destructively; both notes remain.
+**When remote content is allowed to land.** A pulled document is never folded
+into a note that's actively being typed in (edited within the last few
+seconds). It waits in a deferral buffer and applies once the note goes quiet,
+when the app deactivates, or at quit — so text never changes under the caret,
+and a half-typed sentence is never what the merge sees as "the local version".
+When it does land in an open editor, the caret and viewport stay with the
+content they were next to. Deferred documents reconcile with a
+version-guarded `recordMergeBase`, so a base recorded late can never clobber
+one advanced by a newer push. The app also syncs on activation and
+deactivation, which shrinks the divergence window between devices to roughly
+zero for one person moving between machines.
 
-Drawings are structured but effectively opaque to merge, so a conflicting
-drawing keeps the local version live and retains the server's as a conflict-copy
-drawing reachable from the same bar.
+A push that loses a version race (`conflict` from the server) blocks that
+outbox item and records the clash — but the very next pull hands the same
+divergence to the three-way merge, which reconciles it properly. When it does,
+the blocked item and its conflict record are **retired automatically**: the
+merge outcome (folded in, re-enqueued, or preserved as a conflict copy) *is*
+the resolution, and surfacing the push-time record too would double-report the
+same event. Manual "keep mine / take theirs" remains only for records the app
+cannot reconcile itself.
+
+The UI keeps conflict copies out of the way rather than mixing them with real
+notes: the sidebar collects them in a **Conflicts** folder with a
+delete-them-all button, and the affected note shows a bar — *"Also edited on
+another device"* — with **Show copy** and **Delete copy**. Nothing resolves
+destructively; both notes remain until the user says otherwise.
+
+Drawings are structured but effectively opaque to merge: the pulled version
+replaces the local one, local edits push back as fresh intent, and a drawing
+push that lost its race is retired with the pull — the drawing model keeps no
+conflict copies.
 
 Timestamps are never the deciding factor. Ordering authority is the server's
 `version`; `modifiedAt` is informational only.

@@ -167,6 +167,12 @@ enum SelfTest {
         store.notes = [note, Note(text: "# Ideas Vault\n\nThings worth keeping."),
                        Note(text: "# Writing\n\nDrafts in progress."),
                        Note(text: "# Journal\n\nToday was long.")]
+        // One conflict copy, so the render exercises the Conflicts folder and
+        // the in-note banner.
+        var phoneVersion = Note(id: note.id, text: note.text)
+        phoneVersion.text = "# Midnight Thoughts\n\nThe phone's take on this note."
+        store.notes.append(NoteMerge.conflictCopy(of: NoteDocument(note: phoneVersion),
+                                                  source: note.id))
         store.selectedID = note.id
 
         let sync = SyncController(notes: store, root: root.appendingPathComponent("sync"))
@@ -414,6 +420,66 @@ enum SelfTest {
         } else {
             check("no base means conflict, not a guess", false, "\(outcome)")
         }
+
+        // Line-level merge: edits to different regions of one body combine
+        // instead of conflicting — the common case of touching the same note
+        // from two devices.
+        let planBase = NoteDocument(note: Note(id: base.id,
+            text: "# Plan\n\nalpha\nbravo\ncharlie\n\n- one\n- two"))
+        localNote.pinned = false
+        remoteNote.pinned = false
+        localNote.text = "# Plan\n\nalpha, expanded locally\nbravo\ncharlie\n\n- one\n- two"
+        remoteNote.text = "# Plan\n\nalpha\nbravo\ncharlie\n\n- one\n- two\n- three"
+        outcome = NoteMerge.merge(base: planBase,
+                                  local: NoteDocument(note: localNote),
+                                  remote: NoteDocument(note: remoteNote))
+        if case .merged(let merged) = outcome {
+            check("edits to different lines merge",
+                  merged.body == "# Plan\n\nalpha, expanded locally\nbravo\ncharlie\n\n- one\n- two\n- three",
+                  merged.body)
+        } else {
+            check("edits to different lines merge", false, "\(outcome)")
+        }
+
+        // A deletion on one side coexists with an edit elsewhere on the other.
+        localNote.text = "# Plan\n\nalpha\nbravo\ncharlie"
+        remoteNote.text = "# Plan\n\nalpha!\nbravo\ncharlie\n\n- one\n- two"
+        outcome = NoteMerge.merge(base: planBase,
+                                  local: NoteDocument(note: localNote),
+                                  remote: NoteDocument(note: remoteNote))
+        if case .merged(let merged) = outcome {
+            check("a deletion merges with a distant edit",
+                  merged.body == "# Plan\n\nalpha!\nbravo\ncharlie", merged.body)
+        } else {
+            check("a deletion merges with a distant edit", false, "\(outcome)")
+        }
+
+        // The same line rewritten differently on each side is still a conflict.
+        localNote.text = "# Plan\n\nalpha edited here\nbravo\ncharlie\n\n- one\n- two"
+        remoteNote.text = "# Plan\n\nalpha edited there\nbravo\ncharlie\n\n- one\n- two"
+        outcome = NoteMerge.merge(base: planBase,
+                                  local: NoteDocument(note: localNote),
+                                  remote: NoteDocument(note: remoteNote))
+        if case .conflict = outcome {
+            check("same-line edits still conflict", true)
+        } else {
+            check("same-line edits still conflict", false, "\(outcome)")
+        }
+
+        // Body mechanics: trailing newlines survive, identical independent
+        // edits collapse, and competing insertions at one spot refuse to guess.
+        check("merge preserves trailing newline",
+              NoteMerge.mergeBodies(base: "a\nb\n", local: "a2\nb\n",
+                                    remote: "a\nb\nc\n") == "a2\nb\nc\n")
+        check("identical edits collapse to one",
+              NoteMerge.mergeBodies(base: "a\nb", local: "fixed\nb",
+                                    remote: "fixed\nb") == "fixed\nb")
+        check("competing insertions at one spot conflict",
+              NoteMerge.mergeBodies(base: "a\nz", local: "a\nlocal\nz",
+                                    remote: "a\nremote\nz") == nil)
+        check("an insertion beside a rewrite composes",
+              NoteMerge.mergeBodies(base: "a\nb", local: "new\na\nb",
+                                    remote: "a!\nb") == "new\na!\nb")
 
         // Drawings: viewport state must not affect the synced bytes.
         var drawing = SelfTest.sampleDrawing()
