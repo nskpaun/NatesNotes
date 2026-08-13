@@ -172,6 +172,13 @@ final class NoteStore: ObservableObject {
         if propagate { syncDelegate?.noteStore(self, didDelete: id, drawingIDs: drawingIDs) }
     }
 
+    /// Every conflict copy, gone in one stroke. Deletion propagates, so the
+    /// copies disappear from the other devices too.
+    func deleteAllConflictCopies() {
+        let ids = notes.filter(\.isConflictCopy).map(\.id)
+        for id in ids { delete(id) }
+    }
+
     func duplicate(_ id: UUID) {
         guard let note = notes.first(where: { $0.id == id }) else { return }
         var copy = note

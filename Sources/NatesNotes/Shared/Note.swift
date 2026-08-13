@@ -13,6 +13,10 @@ struct Note: Identifiable, Equatable {
     /// Title is derived from the first non-empty line — no separate title field to
     /// keep in sync, which is what makes the "just start typing" flow work.
     var title: String {
+        // A conflict copy is titled by what it's a copy of, not by its banner.
+        let text = isConflictCopy
+            ? String(self.text.dropFirst(NoteMerge.conflictBanner.count))
+            : self.text
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
             var line = raw.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }

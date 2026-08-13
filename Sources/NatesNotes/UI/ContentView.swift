@@ -78,7 +78,7 @@ struct ContentView: View {
 
     private func notePane(_ note: Note) -> some View {
         VStack(spacing: 0) {
-            ConflictBanner(sync: sync, noteID: note.id)
+            ConflictBanner(store: store, sync: sync, noteID: note.id)
             MarkdownEditor(
                 noteID: note.id,
                 text: Binding(

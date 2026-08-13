@@ -274,33 +274,41 @@ struct SyncPanel: View {
     }
 }
 
-/// In-note banner when this note specifically is conflicted.
+/// In-note banner when another device's version of this note is being kept as
+/// a conflict copy.
 struct ConflictBanner: View {
+    @ObservedObject var store: NoteStore
     @ObservedObject var sync: SyncController
     let noteID: UUID
 
-    private var conflict: ConflictRecord? {
-        sync.conflicts.first { $0.recordKey == NoteDocument.recordKey(for: noteID) }
+    private var copy: Note? {
+        store.notes.first {
+            $0.id == NoteMerge.conflictCopyId(for: noteID) && $0.isConflictCopy
+        }
     }
 
     var body: some View {
-        if let conflict {
+        if let copy {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
-                Text("Also edited on another device. Both versions are kept.")
+                Text("Also edited on another device — that version is kept in Conflicts.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Theme.sTextSecondary)
                 Spacer()
-                Button("Keep mine") { sync.resolveKeepingLocal(conflict) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(Theme.sAccent)
-                Button("Take theirs") { sync.resolveTakingRemote(conflict) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Theme.sTextSecondary)
+                Button("Show copy") {
+                    withAnimation(Motion.snappy) { store.selectedID = copy.id }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Theme.sAccent)
+                Button("Delete copy") {
+                    withAnimation(Motion.spring) { store.delete(copy.id) }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.sTextSecondary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 7)

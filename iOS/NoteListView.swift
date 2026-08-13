@@ -8,8 +8,9 @@ struct NoteListView: View {
     @State private var search = ""
     @State private var showingSync = false
     @State private var openNote: UUID?
+    @State private var confirmDeleteConflicts = false
 
-    private var visible: [Note] {
+    private var matching: [Note] {
         let all = notes.sortedNotes
         guard !search.isEmpty else { return all }
         return all.filter {
@@ -17,12 +18,15 @@ struct NoteListView: View {
         }
     }
 
+    private var visible: [Note] { matching.filter { !$0.isConflictCopy } }
+    private var conflictCopies: [Note] { matching.filter(\.isConflictCopy) }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Color(Theme.windowBG).ignoresSafeArea()
 
-                if visible.isEmpty {
+                if visible.isEmpty && conflictCopies.isEmpty {
                     ContentUnavailableView(
                         search.isEmpty ? "No notes yet" : "Nothing matches",
                         systemImage: search.isEmpty ? "doc.text" : "magnifyingglass",
@@ -33,30 +37,38 @@ struct NoteListView: View {
                 } else {
                     List {
                         ForEach(visible) { note in
-                            NavigationLink(value: note.id) {
-                                NoteRow(note: note)
-                            }
-                            .listRowBackground(Color(Theme.panelBG))
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                    notes.togglePin(note.id)
-                                } label: {
-                                    Label(note.pinned ? "Unpin" : "Pin",
-                                          systemImage: note.pinned ? "pin.slash" : "pin")
+                            noteLink(note)
+                        }
+                        if !conflictCopies.isEmpty {
+                            Section {
+                                ForEach(conflictCopies) { note in
+                                    noteLink(note)
                                 }
-                                .tint(Color(Theme.accent))
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    notes.delete(note.id)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                            } header: {
+                                HStack {
+                                    Text("Conflicts")
+                                        .foregroundStyle(.orange.opacity(0.85))
+                                    Spacer()
+                                    Button("Delete All", role: .destructive) {
+                                        confirmDeleteConflicts = true
+                                    }
+                                    .font(.caption.weight(.medium))
                                 }
                             }
                         }
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
+                    .confirmationDialog(
+                        "Delete all \(conflictCopies.count) conflict copies?",
+                        isPresented: $confirmDeleteConflicts,
+                        titleVisibility: .visible) {
+                        Button("Delete All", role: .destructive) {
+                            notes.deleteAllConflictCopies()
+                        }
+                    } message: {
+                        Text("Merge anything worth keeping into the original notes first. This removes the copies from every synced device.")
+                    }
                 }
             }
             .navigationTitle("Nate's Notes")
@@ -104,6 +116,29 @@ struct NoteListView: View {
             }
         }
         .sheet(isPresented: $showingSync) { SyncSheet() }
+    }
+
+    private func noteLink(_ note: Note) -> some View {
+        NavigationLink(value: note.id) {
+            NoteRow(note: note)
+        }
+        .listRowBackground(Color(Theme.panelBG))
+        .swipeActions(edge: .leading) {
+            Button {
+                notes.togglePin(note.id)
+            } label: {
+                Label(note.pinned ? "Unpin" : "Pin",
+                      systemImage: note.pinned ? "pin.slash" : "pin")
+            }
+            .tint(Color(Theme.accent))
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                notes.delete(note.id)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 }
 

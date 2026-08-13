@@ -4,15 +4,16 @@ struct Sidebar: View {
     @ObservedObject var store: NoteStore
     @ObservedObject var app: AppState
 
+    @State private var confirmDeleteConflicts = false
+
     private var locked: Bool { app.mode == .lockedIn }
-    private var pinned: [Note] { store.filteredNotes.filter(\.pinned) }
-    private var others: [Note] { store.filteredNotes.filter { !$0.pinned } }
+    private var pinned: [Note] { store.filteredNotes.filter { $0.pinned && !$0.isConflictCopy } }
+    private var others: [Note] { store.filteredNotes.filter { !$0.pinned && !$0.isConflictCopy } }
+    private var conflictCopies: [Note] { store.filteredNotes.filter(\.isConflictCopy) }
 
     var body: some View {
         ZStack(alignment: .trailing) {
             VStack(alignment: .leading, spacing: 0) {
-                workspaceHeader
-                quickLinks
                 notesList
                 Spacer(minLength: 0)
                 newNoteButton
@@ -26,54 +27,6 @@ struct Sidebar: View {
         }
         .frame(width: Theme.sidebarWidth)
         .background(Theme.sSidebar)
-    }
-
-    // MARK: - Header
-
-    private var workspaceHeader: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "brain")
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(Theme.sAccent)
-            Text("My Mind")
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(Theme.sTextPrimary)
-            Spacer()
-            Image(systemName: "chevron.down")
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(Theme.sTextFaint)
-        }
-        .padding(.horizontal, 8)
-        .padding(.bottom, 12)
-    }
-
-    // MARK: - Quick links
-
-    private struct QuickLink: Identifiable {
-        let id = UUID()
-        let icon: String
-        let label: String
-        let filter: (Note) -> Bool
-    }
-
-    private var quickLinks: some View {
-        VStack(spacing: 1) {
-            let links: [QuickLink] = [
-                QuickLink(icon: "tray", label: "Inbox") { _ in true },
-                QuickLink(icon: "calendar", label: "Today") {
-                    Calendar.current.isDateInToday($0.updated)
-                },
-                QuickLink(icon: "star", label: "Favorites") { $0.pinned }
-            ]
-            ForEach(links) { link in
-                let count = store.notes.filter(link.filter).count
-                SidebarRow(icon: link.icon, label: link.label, trailing: count > 0 ? "\(count)" : nil,
-                           selected: false, accentDot: false) {
-                    store.search = ""
-                }
-            }
-        }
-        .padding(.bottom, 14)
     }
 
     // MARK: - Notes
@@ -97,6 +50,13 @@ struct Sidebar: View {
                         noteRow(note)
                     }
 
+                    if !conflictCopies.isEmpty {
+                        conflictsHeader
+                        ForEach(conflictCopies) { note in
+                            noteRow(note)
+                        }
+                    }
+
                     if store.filteredNotes.isEmpty {
                         Text("Nothing matches")
                             .font(.system(size: 11.5))
@@ -110,9 +70,51 @@ struct Sidebar: View {
         }
     }
 
+    // MARK: - Conflicts
+
+    /// Conflict copies live in their own folder so they never mix with real
+    /// notes, with one button to sweep the lot.
+    private var conflictsHeader: some View {
+        HStack(spacing: 6) {
+            Text("CONFLICTS")
+                .font(.system(size: 9.5, weight: .semibold))
+                .tracking(0.14 * 9.5)
+                .foregroundStyle(.orange.opacity(0.75))
+            Text("\(conflictCopies.count)")
+                .font(Font(Theme.mono(9.5)))
+                .foregroundStyle(Theme.sTextFaint)
+            Spacer()
+            Button {
+                confirmDeleteConflicts = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.sTextTertiary)
+                    .frame(width: 20, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pressable()
+            .help("Delete every conflict copy")
+            .confirmationDialog(
+                "Delete all \(conflictCopies.count) conflict copies?",
+                isPresented: $confirmDeleteConflicts) {
+                Button("Delete All", role: .destructive) {
+                    withAnimation(Motion.spring) { store.deleteAllConflictCopies() }
+                }
+            } message: {
+                Text("Anything worth keeping should be merged into the original note first. This removes the copies from every synced device.")
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.top, 14)
+        .padding(.bottom, 6)
+    }
+
     private func noteRow(_ note: Note) -> some View {
-        SidebarRow(icon: note.emoji.isEmpty ? (note.hasDrawing ? "scribble" : "doc.text") : nil,
-                   emoji: note.emoji,
+        SidebarRow(icon: note.isConflictCopy ? "exclamationmark.triangle"
+                       : note.emoji.isEmpty ? (note.hasDrawing ? "scribble" : "doc.text") : nil,
+                   emoji: note.isConflictCopy ? "" : note.emoji,
                    label: note.title,
                    trailing: nil,
                    selected: store.selectedID == note.id,
