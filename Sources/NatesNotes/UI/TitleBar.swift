@@ -39,6 +39,8 @@ struct TitleBar: View {
 
                 SegmentedPair(onDraw: onDraw)
 
+                SendToAgentButton(store: store)
+
                 SearchPill { app.openPalette() }
 
                 SyncStatusButton(sync: sync)

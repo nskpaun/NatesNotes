@@ -102,6 +102,16 @@ style, sloppiness, sharp or round corners, and opacity.
 
 Click any drawing in a note to reopen it.
 
+## Send to Claude Code / Codex
+
+The **Send to agent** button in the title bar hands a note to a coding agent:
+write a prompt, pick Claude Code or Codex, choose the project folder to run in,
+and optionally attach the open note as context. A Terminal window opens with
+the agent already reading the prompt. The launch goes through a generated
+`.command` file (no automation permission needed), run under a login shell so
+`claude`/`codex` resolve from your normal PATH; the prompt travels in a sidecar
+file, so nothing in a note can escape into the shell.
+
 ## Where your notes live
 
 `~/Documents/NatesNotes/` — one `.md` file per note with a small YAML front
@@ -123,9 +133,14 @@ The design decisions, wire format and conflict policy are written up in
   offline edits survive a crash or a quit and send later.
 - Content is **content-addressed**; uploads are resumable (tus) and downloads
   are rejected unless the byte count and SHA-256 both check out.
-- Conflicts **never overwrite**. A three-way merge handles independent changes;
-  when the same text diverges, this device keeps its version and the other one
-  is preserved as a conflict copy that syncs back to every device.
+- Remote edits **never land in a note you're typing in** — they wait until the
+  note has been quiet for a few seconds, and when they do land the caret stays
+  with its content. The app also syncs on activation and deactivation, so
+  moving between devices hands the note over cleanly.
+- Conflicts **never overwrite**. A line-level three-way merge combines edits to
+  different parts of a note; only when the same lines diverge does this device
+  keep its version and preserve the other as a conflict copy. Copies collect
+  in a **Conflicts** folder in the sidebar, with one button to delete them all.
 - The device token lives in the **Keychain** only — never in preferences, logs,
   URLs or the app's own state file.
 - Notes stay fully usable with sync off, unpaired, or unreachable.
@@ -197,7 +212,7 @@ The binary can render its own UI offscreen and exercise the canvas without a
 display:
 
 ```bash
-swift test                                                     # 36 sync tests
+swift test                                                     # 47 sync tests
 .build/release/NatesNotes --render-samples /tmp/shots          # editor.png, canvas.png
 .build/release/NatesNotes --render-samples /tmp/shots --dark   # dark variants
 .build/release/NatesNotes --test-canvas                        # interaction checks
